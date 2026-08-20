@@ -37,7 +37,7 @@ jobs:
 
       - name: Synthesize template
         working-directory: cdk
-        run: make synth
+        run: make template
 
       - name: Commit regenerated template
         run: |
