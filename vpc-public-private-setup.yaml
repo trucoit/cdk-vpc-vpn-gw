@@ -1,0 +1,1139 @@
+Description: "VPC with public and (optionally) private subnets. NetworkMode selects one of three layouts: PublicOnly, PublicPrivate (managed NAT gateway), or PublicPrivateCustomRouting (a self-healing EC2 Spot gateway that routes all private-subnet egress - a VPN client can be layered on top)."
+AWSTemplateFormatVersion: "2010-09-09"
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network layout ...
+        Parameters:
+          - NetworkMode
+          - ResourcesPrefixName
+      - Label:
+          default: Flow logs (optional) ...
+        Parameters:
+          - EnableFlowLogs
+          - TrafficType
+          - RetentionInDays
+      - Label:
+          default: Custom routing gateway (NetworkMode=PublicPrivateCustomRouting) ...
+        Parameters:
+          - GatewayInstanceType
+          - GatewayCapacityMode
+          - EnableSsmEndpoints
+Parameters:
+  ResourcesPrefixName:
+    Type: String
+    Default: auto-networking
+    Description: Prefix name for all the auto generated resources
+  RetentionInDays:
+    Type: Number
+    Default: 14
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    Description: Specifies the number of days you want to retain log events.
+  TrafficType:
+    Type: String
+    Default: REJECT
+    AllowedValues:
+      - ACCEPT
+      - REJECT
+      - ALL
+    Description: The type of traffic to log.
+  EnableFlowLogs:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable VPC Flow Logs
+  NetworkMode:
+    Type: String
+    Default: PublicOnly
+    AllowedValues:
+      - PublicOnly
+      - PublicPrivate
+      - PublicPrivateCustomRouting
+    Description: |-
+      Network layout to deploy.
+      - PublicOnly: public subnets, IGW, public route table only.
+      - PublicPrivate: also private subnets behind a managed NAT gateway.
+      - PublicPrivateCustomRouting: private subnets behind a self-healing EC2
+        Spot gateway that re-points the private route at itself and NATs egress
+        (a VPN client can be layered on top). See the custom-gateway parameters.
+  GatewayInstanceType:
+    Type: String
+    Default: t3.micro
+    Description: |-
+      Instance type for the custom routing gateway. Used only when
+      NetworkMode=PublicPrivateCustomRouting. Also the first entry in the Auto
+      Scaling group's instance-type overrides (alongside a couple of small
+      alternates) so the Spot capacity strategy has choices.
+  GatewayCapacityMode:
+    Type: String
+    Default: SpotLowestPrice
+    AllowedValues:
+      - SpotLowestPrice
+      - SpotCapacityOptimized
+      - OnDemand
+    Description: |-
+      Purchase model for the custom routing gateway. Used only when
+      NetworkMode=PublicPrivateCustomRouting.
+      - SpotLowestPrice: 100% Spot, cheapest AZ/type (most interruptions).
+      - SpotCapacityOptimized: 100% Spot, price-capacity-optimized (fewer
+        interruptions, better availability).
+      - OnDemand: no Spot; the single instance is On-Demand (best availability,
+        highest cost).
+  EnableSsmEndpoints:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: |-
+      Create SSM interface endpoints (ssm, ssmmessages, ec2messages) so private
+      instances stay reachable over Session Manager when the gateway tunnel is
+      down. Used only when NetworkMode=PublicPrivateCustomRouting.
+      COST: these bill per hour whether used or not, roughly $22/month for the
+      three endpoints in one AZ. Leave false unless you need tunnel-independent
+      SSM access to private instances.
+Mappings:
+  CapacityModeMap:
+    SpotLowestPrice:
+      OnDemandPercentage: 0
+      SpotStrategy: lowest-price
+    SpotCapacityOptimized:
+      OnDemandPercentage: 0
+      SpotStrategy: price-capacity-optimized
+    OnDemand:
+      OnDemandPercentage: 100
+      SpotStrategy: lowest-price
+Conditions:
+  HasPrivateSubnets:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: NetworkMode
+          - PublicOnly
+  UseNatGateway:
+    Fn::Equals:
+      - Ref: NetworkMode
+      - PublicPrivate
+  UseCustomGateway:
+    Fn::Equals:
+      - Ref: NetworkMode
+      - PublicPrivateCustomRouting
+  EnableSsmEndpointsCondition:
+    Fn::And:
+      - Fn::Equals:
+          - Ref: NetworkMode
+          - PublicPrivateCustomRouting
+      - Fn::Equals:
+          - Ref: EnableSsmEndpoints
+          - "true"
+  EnableFlowLogsCondition:
+    Fn::Equals:
+      - Ref: EnableFlowLogs
+      - "true"
+Resources:
+  PubPrivateVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-vpc
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-public-subnet-A
+      VpcId:
+        Ref: PubPrivateVPC
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-public-subnet-B
+      VpcId:
+        Ref: PubPrivateVPC
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs: ""
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-public-subnet-C
+      VpcId:
+        Ref: PubPrivateVPC
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-igw
+  GatewayToInternet:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId:
+        Ref: InternetGateway
+      VpcId:
+        Ref: PubPrivateVPC
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-PublicRouteTable
+      VpcId:
+        Ref: PubPrivateVPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+      RouteTableId:
+        Ref: PublicRouteTable
+    DependsOn:
+      - GatewayToInternet
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      SubnetId:
+        Ref: PublicSubnet1
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      SubnetId:
+        Ref: PublicSubnet2
+  PublicSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PublicRouteTable
+      SubnetId:
+        Ref: PublicSubnet3
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-PrivateRouteTable
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: HasPrivateSubnets
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-private-subnet-A
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: HasPrivateSubnets
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTable
+      SubnetId:
+        Ref: PrivateSubnet1
+    Condition: HasPrivateSubnets
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""
+      CidrBlock: 10.0.5.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-private-subnet-B
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: HasPrivateSubnets
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTable
+      SubnetId:
+        Ref: PrivateSubnet2
+    Condition: HasPrivateSubnets
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs: ""
+      CidrBlock: 10.0.6.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-private-subnet-C
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: HasPrivateSubnets
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTable
+      SubnetId:
+        Ref: PrivateSubnet3
+    Condition: HasPrivateSubnets
+  NatPublicIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+    DependsOn:
+      - PubPrivateVPC
+    Condition: UseNatGateway
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+          - NatPublicIP
+          - AllocationId
+      SubnetId:
+        Ref: PublicSubnet1
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-NatGateway
+    Condition: UseNatGateway
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NatGateway
+      RouteTableId:
+        Ref: PrivateRouteTable
+    Condition: UseNatGateway
+  CustomGwVpnBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-custom-gw-vpn
+    Condition: UseCustomGateway
+  CustomGwEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-custom-gw-eip
+    Condition: UseCustomGateway
+  CustomGwSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Custom routing gateway - allow all traffic from within the VPC
+      SecurityGroupIngress:
+        - CidrIp:
+            Fn::GetAtt:
+              - PubPrivateVPC
+              - CidrBlock
+          IpProtocol: "-1"
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-custom-gw-sg
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: UseCustomGateway
+  CustomGwInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Path: /
+      Policies:
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ManageDefaultRoute
+                Effect: Allow
+                Action:
+                  - ec2:CreateRoute
+                  - ec2:ReplaceRoute
+                Resource:
+                  Fn::Sub:
+                    - arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${rt}
+                    - rt:
+                        Ref: PrivateRouteTable
+              - Sid: DisableSourceDestCheck
+                Effect: Allow
+                Action: ec2:ModifyInstanceAttribute
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/Name:
+                      Fn::Sub: ${ResourcesPrefixName}-custom-gw
+              - Sid: AssociateEip
+                Effect: Allow
+                Action: ec2:AssociateAddress
+                Resource:
+                  - Fn::Sub:
+                      - arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${id}
+                      - id:
+                          Fn::GetAtt:
+                            - CustomGwEip
+                            - AllocationId
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Sid: DescribeForRouteAndEip
+                Effect: Allow
+                Action:
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeAddresses
+                Resource: "*"
+              - Sid: WatchdogHealth
+                Effect: Allow
+                Action: autoscaling:SetInstanceHealth
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${AWS::StackName}-custom-gw
+              - Sid: VpnFiles
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - Fn::GetAtt:
+                      - CustomGwVpnBucket
+                      - Arn
+                  - Fn::Sub:
+                      - ${arn}/*
+                      - arn:
+                          Fn::GetAtt:
+                            - CustomGwVpnBucket
+                            - Arn
+          PolicyName: custom-gw
+    Condition: UseCustomGateway
+  CustomGwInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - Ref: CustomGwInstanceRole
+    Condition: UseCustomGateway
+  CustomGwLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Name:
+            Ref: CustomGwInstanceProfile
+        ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+        InstanceType:
+          Ref: GatewayInstanceType
+        MetadataOptions:
+          HttpTokens: required
+        SecurityGroupIds:
+          - Ref: CustomGwSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value:
+                  Fn::Sub: ${ResourcesPrefixName}-custom-gw
+        UserData:
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash -xe
+
+                # Fail the stack fast (don't wait for the CreationPolicy timeout) if any
+                # command below errors. Under `set -e` a failing command trips this ERR trap,
+                # which signals CREATE failure so the ASG rolls back / replaces. Prefer letting
+                # a check fail naturally over `exit 1` (a bare `exit` does NOT fire an ERR trap).
+                trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackId} --resource ${AsgLogicalId} --region ${AWS::Region}' ERR
+
+                #################################
+                # Metadata and interface
+                ##
+                # IMDSv2 identity. A long token TTL covers the whole boot (package installs plus
+                # tunnel bring-up can exceed the default 5 minutes).
+                TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+                          -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+                IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+                          http://169.254.169.254/latest/meta-data/instance-id)
+
+                #################################
+                # Prerequisites
+                ##
+                # Amazon Linux 2023 provides the iptables command backed by nftables, and it
+                # carries OpenVPN in its own repos (the amzn2023-tagged build), so a plain dnf
+                # install needs no third-party repo. If OpenVPN is somehow missing afterward,
+                # the bare check below fails, the ERR trap fires, and the instance never comes
+                # up leaky.
+                dnf install -y iptables openvpn
+                command -v openvpn >/dev/null
+                # Convenience tooling for operators. Best-effort so it never blocks boot.
+                dnf install -y htop || true
+
+                #################################
+                # Kernel network settings
+                ##
+                # ip_forward turns the box into a router. rp_filter is loose (2) on purpose. Once
+                # the tunnel-up script adds its policy route, strict reverse-path filtering would
+                # quietly drop every return packet, because the reverse lookup for a public source
+                # resolves to eth0 rather than tun0. IPv6 forwarding stays off so a future IPv6
+                # CIDR can't slip past the switch.
+                cat > /etc/sysctl.d/99-custom-gw.conf <<'SYSCTL'
+                net.ipv4.ip_forward = 1
+                net.ipv4.conf.all.rp_filter = 2
+                net.ipv4.conf.default.rp_filter = 2
+                net.ipv6.conf.all.forwarding = 0
+                SYSCTL
+                sysctl -p /etc/sysctl.d/99-custom-gw.conf
+
+                #################################
+                # Router prerequisites
+                ##
+                # Disable this instance's source/dest check so it can forward packets that are
+                # not addressed to it.
+                aws ec2 modify-instance-attribute --region ${AWS::Region} \
+                  --instance-id "$IID" --no-source-dest-check
+
+                #################################
+                # Stable egress IP
+                ##
+                # Re-associate the stack's Elastic IP with THIS instance (--allow-reassociation
+                # steals it from a terminated predecessor). Done before the tunnel starts so the
+                # OpenVPN control channel to the peer always originates from the same address a
+                # peer-side allowlist can trust. Wait until IMDS reflects the EIP before moving on.
+                EIP=$(aws ec2 describe-addresses --region ${AWS::Region} \
+                  --allocation-ids ${CustomGwEipAllocId} \
+                  --query 'Addresses[0].PublicIp' --output text)
+                aws ec2 associate-address --region ${AWS::Region} \
+                  --instance-id "$IID" --allocation-id ${CustomGwEipAllocId} --allow-reassociation
+                for i in $(seq 1 15); do
+                  CUR=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+                          http://169.254.169.254/latest/meta-data/public-ipv4 || true)
+                  [ "$CUR" = "$EIP" ] && break
+                  sleep 2
+                done
+
+                #################################
+                # Kill switch (fail-closed firewall)
+                ##
+                # The real leak guarantee. A systemd oneshot programs it, not just this user-data,
+                # because cloud-init runs once per instance and a reboot would otherwise drop the
+                # rules. The unit is ordered before OpenVPN, so DROP is in force before any packet
+                # can be forwarded, and it reprograms itself on every boot.
+                #
+                # The rules are scoped by interface, which is stricter and clearer than matching IP
+                # ranges. Forwarded traffic only ever crosses between the LAN NIC and tun0, so the
+                # two allowed paths are LAN->tun0 outbound and tun0->LAN for established replies.
+                # Anything else hits DROP, and there is no LAN-side SNAT, so an unmatched packet
+                # leaves un-NATed and the internet gateway discards it. The LAN NIC name varies by
+                # instance type (eth0 / ens5 / enX0), so detect it once and persist it for the kill
+                # switch and tunnel scripts to read.
+                LAN_IF=$(ip route show default | awk '{print $5; exit}')
+                echo "$LAN_IF" > /etc/gw-lan-if
+
+                cat > /usr/local/sbin/gw-killswitch.sh <<'KILLSWITCH'
+                #!/bin/bash
+                set -e
+                LAN_IF=$(cat /etc/gw-lan-if)
+                iptables -F FORWARD
+                iptables -t nat -F POSTROUTING
+                iptables -t mangle -F FORWARD
+
+                iptables -P FORWARD DROP
+                # outbound, only traffic forwarded from the LAN NIC into the tunnel
+                iptables -A FORWARD -i "$LAN_IF" -o tun0 -j ACCEPT
+                # return, only established replies coming back from the tunnel to the LAN NIC
+                iptables -A FORWARD -i tun0 -o "$LAN_IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+                # NAT everything leaving the tunnel to the tunnel's address
+                iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE
+                # clamp MSS to the tunnel's lower path MTU so large TCP segments don't blackhole
+                iptables -t mangle -A FORWARD -p tcp --syn -o tun0 -j TCPMSS --clamp-mss-to-pmtu
+                # IPv6 has no forwarding path here. Fail closed if a v6 CIDR ever appears.
+                ip6tables -P FORWARD DROP 2>/dev/null || true
+                KILLSWITCH
+                chmod 0755 /usr/local/sbin/gw-killswitch.sh
+
+                cat > /etc/systemd/system/gw-killswitch.service <<'UNIT'
+                [Unit]
+                Description=Custom gateway fail-closed firewall (kill switch)
+                After=network-pre.target
+                Before=openvpn-client@tun-vpn.service
+                Wants=network-pre.target
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                ExecStart=/usr/local/sbin/gw-killswitch.sh
+                [Install]
+                WantedBy=multi-user.target
+                UNIT
+
+                systemctl daemon-reload
+                systemctl enable --now gw-killswitch.service
+
+                #################################
+                # VPN client files
+                ##
+                # Pull whatever is in the stack-created bucket into /etc/vpn. The bucket starts
+                # empty (you upload the .ovpn later), so this is a no-op until then. Best-effort
+                # so an empty bucket never blocks boot.
+                mkdir -p /etc/vpn
+                aws s3 cp --recursive "s3://${CustomGwVpnBucket}/" /etc/vpn/ || true
+
+                #################################
+                # OpenVPN client config
+                ##
+                # Find an uploaded profile. When none exists yet the box still comes up, but
+                # fail-closed, so the kill switch drops all private egress until someone uploads a
+                # profile and refreshes the instance. That way the first deploy against an empty
+                # bucket succeeds without ever leaking. The /run/gw-vpn-configured sentinel gates
+                # the tunnel steps and the watchdog's tunnel checks.
+                SRC=$(ls /etc/vpn/*.ovpn /etc/vpn/*.conf 2>/dev/null | head -n 1 || true)
+                if [ -n "$SRC" ]; then
+                  install -d -m 0700 /etc/openvpn/client
+
+                  # Strip any directive that could re-hijack the main routing table or rename the
+                  # interface, then append our own fixed settings.
+                  grep -viE '^[[:space:]]*(dev|dev-type|redirect-gateway|route|route-nopull)([[:space:]]|$)' \
+                    "$SRC" > /etc/openvpn/client/tun-vpn.conf || true
+                  cat >> /etc/openvpn/client/tun-vpn.conf <<'OVPN'
+
+                # Managed by gw-bootstrap.sh, do not edit
+                dev tun0
+                dev-type tun
+                nobind
+                persist-tun
+                route-nopull
+                script-security 2
+                up   /etc/openvpn/client/tun-up.sh
+                down /etc/openvpn/client/tun-down.sh
+                mssfix 1360
+                OVPN
+
+                  # Username/password profiles (NordVPN and similar) carry a bare auth-user-pass
+                  # line, which makes OpenVPN block on an interactive prompt under systemd and
+                  # time out the boot. When a credentials file was uploaded (two lines, the
+                  # service username then the password), point the directive at it so bring-up
+                  # stays non-interactive. Lock the file down first, since it holds a secret.
+                  if [ -f /etc/vpn/credentials.txt ]; then
+                    chmod 600 /etc/vpn/credentials.txt
+                    sed -i 's#^[[:space:]]*auth-user-pass[[:space:]]*$#auth-user-pass /etc/vpn/credentials.txt#' \
+                      /etc/openvpn/client/tun-vpn.conf
+                  fi
+
+                  # The up-script sends forwarded traffic into the tunnel while the box's own
+                  # traffic (SSM, S3, EC2 API) stays on the main table. It matches the INGRESS
+                  # interface, not the source: forwarded client packets arrive on the LAN NIC,
+                  # whereas the gateway's own packets are locally generated and share the
+                  # 10.0.0.0/16 source range, so a "from 10.0.0.0/16" rule would wrongly divert
+                  # the box's own traffic into the tunnel and cut its control plane. Runs on
+                  # every reconnect. OpenVPN gives up/down scripts a minimal PATH that omits
+                  # /usr/sbin (where ip lives), so set PATH. set -e leaves the sentinel untouched
+                  # on failure, so the boot wait fails closed instead of coming up broken.
+                  cat > /etc/openvpn/client/tun-up.sh <<'TUNUP'
+                #!/bin/bash
+                set -e
+                export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+                LAN_IF=$(cat /etc/gw-lan-if)
+                ip route replace default dev "$dev" table 100
+                ip rule add iif "$LAN_IF" lookup 100 priority 100 2>/dev/null || true
+                touch /run/gw-tunnel-up
+                TUNUP
+                  chmod 0755 /etc/openvpn/client/tun-up.sh
+
+                  cat > /etc/openvpn/client/tun-down.sh <<'TUNDOWN'
+                #!/bin/bash
+                export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+                LAN_IF=$(cat /etc/gw-lan-if)
+                ip rule del iif "$LAN_IF" lookup 100 priority 100 2>/dev/null || true
+                rm -f /run/gw-tunnel-up
+                TUNDOWN
+                  chmod 0755 /etc/openvpn/client/tun-down.sh
+
+                  touch /run/gw-vpn-configured
+                fi
+
+                #################################
+                # Bring up the tunnel
+                ##
+                if [ -f /run/gw-vpn-configured ]; then
+                  systemctl enable --now openvpn-client@tun-vpn
+
+                  #################################
+                  # Wait for tunnel
+                  ##
+                  # Poll for the up-script sentinel + a live tun0. On timeout, fail the check so
+                  # the ERR trap replaces the instance rather than leaving it up without a tunnel.
+                  TUN_UP=0
+                  for i in $(seq 1 60); do
+                    if [ -f /run/gw-tunnel-up ] && ip link show tun0 up >/dev/null 2>&1; then
+                      TUN_UP=1
+                      break
+                    fi
+                    sleep 2
+                  done
+                  test "$TUN_UP" = 1
+
+                  #################################
+                  # Verify egress
+                  ##
+                  # The policy route the up-script installs is what sends forwarded client traffic
+                  # into the tunnel. Confirm it is actually there, since a curl bound to tun0 would
+                  # pass even without it and hide a broken forwarded path.
+                  ip rule | grep -q 'lookup 100'
+                  ip route show table 100 | grep -q '^default'
+                  # Confirm traffic actually leaves through the tunnel. The exit IP seen over tun0
+                  # must be non-empty and differ from this box's own public IP, which is the EIP.
+                  TUNIP=$(curl -s --interface tun0 --max-time 5 https://checkip.amazonaws.com || true)
+                  test -n "$TUNIP"
+                  test "$TUNIP" != "$EIP"
+                fi
+
+                #################################
+                # Claim the private default route
+                ##
+                # Point the private route table's default at this instance. Done AFTER the tunnel
+                # is verified so, during a rolling replacement, the route stays blackholed at the
+                # old (dead) instance instead of delivering traffic before egress works.
+                aws ec2 replace-route --region ${AWS::Region} \
+                  --route-table-id ${PrivateRouteTable} \
+                  --destination-cidr-block 0.0.0.0/0 --instance-id "$IID" 2>/dev/null \
+                || aws ec2 create-route --region ${AWS::Region} \
+                  --route-table-id ${PrivateRouteTable} \
+                  --destination-cidr-block 0.0.0.0/0 --instance-id "$IID"
+
+                #################################
+                # Health watchdog
+                ##
+                # Marks the instance Unhealthy (so the ASG replaces it) when the route or the
+                # tunnel is broken. Gated on /run/gw-boot-complete to avoid racing the tunnel
+                # bring-up window, requires 5 consecutive failures, and tries one self-heal
+                # restart before escalating. Tunnel checks only apply once a profile exists.
+                cat > /usr/local/sbin/gw-healthcheck.sh <<'GWHC'
+                #!/bin/bash
+                # Don't judge health until boot finished (prevents a replacement loop).
+                [ -f /run/gw-boot-complete ] || exit 0
+
+                TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+                          -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+                IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+                          http://169.254.169.254/latest/meta-data/instance-id)
+                PUBIP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+                          http://169.254.169.254/latest/meta-data/public-ipv4)
+                OK=1
+
+                # The private default route must still target THIS instance.
+                TARGET=$(aws ec2 describe-route-tables --region ${AWS::Region} \
+                  --route-table-ids ${PrivateRouteTable} \
+                  --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].InstanceId | [0]" \
+                  --output text 2>/dev/null)
+                [ "$TARGET" = "$IID" ] || OK=0
+
+                # When a VPN profile is configured, the tunnel must be up and egress must
+                # actually leave through it (exit IP differs from our own public IP / EIP).
+                if [ -f /run/gw-vpn-configured ]; then
+                  ip link show tun0 up >/dev/null 2>&1 || OK=0
+                  TUNIP=$(curl -s --interface tun0 --max-time 5 https://checkip.amazonaws.com 2>/dev/null)
+                  { [ -n "$TUNIP" ] && [ "$TUNIP" != "$PUBIP" ]; } || OK=0
+                fi
+
+                if [ "$OK" -ne 1 ]; then
+                  # One bounded self-heal attempt before escalating.
+                  systemctl restart openvpn-client@tun-vpn 2>/dev/null || true
+                  sleep 15
+                  RETRY=$(curl -s --interface tun0 --max-time 5 https://checkip.amazonaws.com 2>/dev/null)
+                  if ip link show tun0 up >/dev/null 2>&1 \
+                     && [ -n "$RETRY" ] && [ "$RETRY" != "$PUBIP" ] && [ "$TARGET" = "$IID" ]; then
+                    rm -f /run/gw-fail-count
+                    exit 0
+                  fi
+                  N=$(( $(cat /run/gw-fail-count 2>/dev/null || echo 0) + 1 ))
+                  echo "$N" > /run/gw-fail-count
+                  if [ "$N" -ge 5 ]; then
+                    aws autoscaling set-instance-health --region ${AWS::Region} \
+                      --instance-id "$IID" --health-status Unhealthy
+                  fi
+                else
+                  rm -f /run/gw-fail-count
+                fi
+                GWHC
+                chmod 0755 /usr/local/sbin/gw-healthcheck.sh
+
+                cat > /etc/systemd/system/gw-healthcheck.service <<'UNIT'
+                [Unit]
+                Description=Custom gateway route/tunnel health watchdog
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/local/sbin/gw-healthcheck.sh
+                UNIT
+
+                cat > /etc/systemd/system/gw-healthcheck.timer <<'UNIT'
+                [Unit]
+                Description=Run the custom gateway health watchdog periodically
+                [Timer]
+                OnBootSec=2min
+                OnUnitActiveSec=1min
+                [Install]
+                WantedBy=timers.target
+                UNIT
+
+                systemctl daemon-reload
+                systemctl enable --now gw-healthcheck.timer
+
+                # Boot finished, so let the watchdog start judging health.
+                touch /run/gw-boot-complete
+
+                #################################
+                # Signal success
+                ##
+                # Last, so the CreationPolicy only succeeds once the kill switch is in force and
+                # (when a profile exists) the tunnel is verified up.
+                /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackId} --resource ${AsgLogicalId} --region ${AWS::Region}
+              - AsgLogicalId: CustomGwASG
+                PrivateRouteTable:
+                  Ref: PrivateRouteTable
+                CustomGwVpnBucket:
+                  Ref: CustomGwVpnBucket
+                CustomGwEipAllocId:
+                  Fn::GetAtt:
+                    - CustomGwEip
+                    - AllocationId
+    Condition: UseCustomGateway
+  CustomGwASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName:
+        Fn::Sub: ${AWS::StackName}-custom-gw
+      DesiredCapacity: "1"
+      MaxSize: "1"
+      MinSize: "1"
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity:
+            Fn::FindInMap:
+              - CapacityModeMap
+              - Ref: GatewayCapacityMode
+              - OnDemandPercentage
+          SpotAllocationStrategy:
+            Fn::FindInMap:
+              - CapacityModeMap
+              - Ref: GatewayCapacityMode
+              - SpotStrategy
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId:
+              Ref: CustomGwLaunchTemplate
+            Version:
+              Fn::GetAtt:
+                - CustomGwLaunchTemplate
+                - LatestVersionNumber
+          Overrides:
+            - InstanceType:
+                Ref: GatewayInstanceType
+            - InstanceType: t3a.small
+            - InstanceType: t2.small
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: true
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-custom-gw
+      VPCZoneIdentifier:
+        - Ref: PublicSubnet1
+        - Ref: PublicSubnet2
+        - Ref: PublicSubnet3
+    CreationPolicy:
+      AutoScalingCreationPolicy:
+        MinSuccessfulInstancesPercent: 100
+      ResourceSignal:
+        Count: 1
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 0
+        MinSuccessfulInstancesPercent: 100
+        PauseTime: PT15M
+        WaitOnResourceSignals: true
+    Condition: UseCustomGateway
+  SsmEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS from the VPC to the SSM interface endpoints
+      SecurityGroupIngress:
+        - CidrIp:
+            Fn::GetAtt:
+              - PubPrivateVPC
+              - CidrBlock
+          FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: ${ResourcesPrefixName}-ssm-endpoint-sg
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: EnableSsmEndpointsCondition
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - Ref: SsmEndpointSecurityGroup
+      ServiceName:
+        Fn::Sub: com.amazonaws.${AWS::Region}.ssm
+      SubnetIds:
+        - Ref: PrivateSubnet1
+      VpcEndpointType: Interface
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: EnableSsmEndpointsCondition
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - Ref: SsmEndpointSecurityGroup
+      ServiceName:
+        Fn::Sub: com.amazonaws.${AWS::Region}.ssmmessages
+      SubnetIds:
+        - Ref: PrivateSubnet1
+      VpcEndpointType: Interface
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: EnableSsmEndpointsCondition
+  Ec2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - Ref: SsmEndpointSecurityGroup
+      ServiceName:
+        Fn::Sub: com.amazonaws.${AWS::Region}.ec2messages
+      SubnetIds:
+        - Ref: PrivateSubnet1
+      VpcEndpointType: Interface
+      VpcId:
+        Ref: PubPrivateVPC
+    Condition: EnableSsmEndpointsCondition
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays:
+        Ref: RetentionInDays
+    Condition: EnableFlowLogsCondition
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource:
+                  Fn::GetAtt:
+                    - LogGroup
+                    - Arn
+          PolicyName: flowlogs-policy
+    Condition: EnableFlowLogsCondition
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn:
+        Fn::GetAtt:
+          - Role
+          - Arn
+      LogGroupName:
+        Ref: LogGroup
+      ResourceId:
+        Ref: PubPrivateVPC
+      ResourceType: VPC
+      TrafficType:
+        Ref: TrafficType
+    Condition: EnableFlowLogsCondition
+Outputs:
+  PubPrivateVPCID:
+    Description: VPC ID
+    Value:
+      Ref: PubPrivateVPC
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-VPCId
+  PrivateSubnet1ID:
+    Description: Private Subnet A ID
+    Value:
+      Ref: PrivateSubnet1
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-privateSubnetID1
+    Condition: HasPrivateSubnets
+  PrivateSubnet2ID:
+    Description: Private Subnet B ID
+    Value:
+      Ref: PrivateSubnet2
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-privateSubnetID2
+    Condition: HasPrivateSubnets
+  PrivateSubnet3ID:
+    Description: Private Subnet C ID
+    Value:
+      Ref: PrivateSubnet3
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-privateSubnetID3
+    Condition: HasPrivateSubnets
+  PublicSubnet1ID:
+    Description: Public Subnet A ID
+    Value:
+      Ref: PublicSubnet1
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-publicSubnetID1
+  PublicSubnet2ID:
+    Description: Public Subnet B ID
+    Value:
+      Ref: PublicSubnet2
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-publicSubnetID2
+  PublicSubnet3ID:
+    Description: Public Subnet C ID
+    Value:
+      Ref: PublicSubnet3
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-publicSubnetID3
+  LogGroupARN:
+    Description: The name of the CloudWatch Logs log group where the flow logs will be published.
+    Value:
+      Fn::GetAtt:
+        - LogGroup
+        - Arn
+    Condition: EnableFlowLogsCondition
+  CustomGatewayASGName:
+    Description: Auto Scaling group name of the custom routing gateway.
+    Value:
+      Ref: CustomGwASG
+    Condition: UseCustomGateway
+  CustomGatewayVpnBucket:
+    Description: Bucket the gateway reads VPN client files from. Upload your config here, then wire the TODO block in the gateway UserData.
+    Value:
+      Ref: CustomGwVpnBucket
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-customGwVpnBucket
+    Condition: UseCustomGateway
+  CustomGatewayEip:
+    Description: The gateway's stable Elastic IP. This is the VPN tunnel's source address; allowlist it on the VPN peer.
+    Value:
+      Ref: CustomGwEip
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-customGwEip
+    Condition: UseCustomGateway
+  PrivateRouteTableId:
+    Description: Private route table id. Its 0.0.0.0/0 route is managed by the custom gateway instance at boot; handy for confirming the route target.
+    Value:
+      Ref: PrivateRouteTable
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-privateRouteTableId
+    Condition: UseCustomGateway
+

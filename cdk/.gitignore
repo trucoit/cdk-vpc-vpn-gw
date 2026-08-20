@@ -1,0 +1,9 @@
+# CDK build/runtime artifacts
+node_modules/
+cdk.out/
+dist/
+
+# The repo-root .gitignore has a broad "**/lib/" (Python) rule that would drop
+# our TypeScript source directory. Re-include it here.
+!lib/
+!lib/**
