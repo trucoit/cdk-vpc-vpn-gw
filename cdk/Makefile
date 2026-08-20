@@ -2,7 +2,7 @@
 # 2026 Pablo - VPC PUBLIC/PRIVATE SETUP - CDK MAKEFILE
 
 STACK        := VpcPublicPrivateSetup
-TEMPLATE_OUT := ../vpc-public-private-setup.yaml
+TEMPLATE_OUT := ../cdk-vpc-vpn-gw.yaml
 ORIGINAL     := ../vpc-public-private-setup-orig.yaml.bkp
 CDK          := npx cdk
 

@@ -119,7 +119,7 @@ Public and private with the managed NAT gateway:
 ```bash
 aws cloudformation deploy \
   --stack-name my-vpc \
-  --template-file vpc-public-private-setup.yaml \
+  --template-file cdk-vpc-vpn-gw.yaml \
   --parameter-overrides NetworkMode=PublicPrivate
 ```
 
@@ -128,7 +128,7 @@ Custom routing gateway on Spot, ready for a VPN, with flow logs:
 ```bash
 aws cloudformation deploy \
   --stack-name my-vpc \
-  --template-file vpc-public-private-setup.yaml \
+  --template-file cdk-vpc-vpn-gw.yaml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     NetworkMode=PublicPrivateCustomRouting \
@@ -149,7 +149,7 @@ The `InstanceId` field should hold the running gateway. Reach the instance throu
 
 ## Build (CDK)
 
-The template is generated from the CDK app under [`cdk/`](cdk/). `vpc-public-private-setup.yaml` is the synth output and the deployable artifact.
+The template is generated from the CDK app under [`cdk/`](cdk/). `cdk-vpc-vpn-gw.yaml` is the synth output and the deployable artifact.
 
 The CDK app is a one-to-one, L1-only re-authoring. It keeps `NetworkMode` and the Conditions, so one synthesized template still selects the layout at deploy time and preserves every logical ID and export name. The boot script lives as a real file at [`cdk/scripts/gw-bootstrap.sh`](cdk/scripts/gw-bootstrap.sh) and is inlined into the launch-template UserData at synth. It is an `Fn::Sub` template, so `${AWS::Region}`, `${PrivateRouteTable}`, and the other placeholders resolve at deploy time, which is why shellcheck flags those lines.
 
@@ -157,7 +157,7 @@ A Makefile drives the build:
 
 ```bash
 cd cdk
-make synth      # write ../vpc-public-private-setup.yaml from the CDK app
+make synth      # write ../cdk-vpc-vpn-gw.yaml from the CDK app
 make deploy     # deploy with cdk deploy (pass CDK_ARGS="--parameters NetworkMode=...")
 make compare    # structural diff against a local reference backup (skipped if absent)
 make prechecks  # verify node, npm, and the AWS CLI are present

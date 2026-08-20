@@ -70,6 +70,6 @@ cdk.context.json
 ###
 # CloudFormation
 #
-# Committed templates (e.g. vpc-public-private-setup.yaml) are kept; only the
+# Committed templates (e.g. cdk-vpc-vpn-gw.yaml) are kept; only the
 # transient output of `aws cloudformation package` is ignored.
 **/*.packaged.yaml
