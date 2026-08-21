@@ -1,16 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import {
-  CfnCondition,
-  CfnMapping,
-  CfnOutput,
-  CfnParameter,
-  CfnResource,
-  Fn,
-  Lazy,
-  Stack,
-  Token,
-} from 'aws-cdk-lib';
+import { CfnCondition, CfnMapping, CfnOutput, CfnParameter, CfnResource, Fn, Lazy, Stack, Token } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -181,10 +171,7 @@ export class VpcPublicPrivateSetup extends Construct {
       default: 14,
       // Number parameter: keep AllowedValues as numbers (matches the original and
       // satisfies cfn-lint). The prop is typed string[], so cast through unknown.
-      allowedValues: [
-        1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180,
-        365, 400, 545, 731, 1827, 3653,
-      ] as unknown as string[],
+      allowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653] as unknown as string[],
     });
 
     new CfnParameter(this, 'TrafficType', {
@@ -378,30 +365,36 @@ export class VpcPublicPrivateSetup extends Construct {
   }
 
   private createPrivateRouting(cfg: Cfg) {
-    this.privateRouteTable = gated(cfg.hasPrivate, () =>
-      new ec2.CfnRouteTable(this, 'PrivateRouteTable', {
-        vpcId: this.vpc.ref,
-        tags: [{ key: 'Name', value: cfg.prefixName('PrivateRouteTable') }],
-      }),
+    this.privateRouteTable = gated(
+      cfg.hasPrivate,
+      () =>
+        new ec2.CfnRouteTable(this, 'PrivateRouteTable', {
+          vpcId: this.vpc.ref,
+          tags: [{ key: 'Name', value: cfg.prefixName('PrivateRouteTable') }],
+        }),
     );
 
     PRIVATE_SUBNET_SPECS.forEach((s, i) => {
-      const subnet = gated(cfg.hasPrivate, () =>
-        new ec2.CfnSubnet(this, s.id, {
-          vpcId: this.vpc.ref,
-          availabilityZone: Fn.select(s.az, Fn.getAzs('')),
-          cidrBlock: s.cidr,
-          mapPublicIpOnLaunch: false,
-          tags: [{ key: 'Name', value: cfg.prefixName(`private-subnet-${s.suffix}`) }],
-        }),
+      const subnet = gated(
+        cfg.hasPrivate,
+        () =>
+          new ec2.CfnSubnet(this, s.id, {
+            vpcId: this.vpc.ref,
+            availabilityZone: Fn.select(s.az, Fn.getAzs('')),
+            cidrBlock: s.cidr,
+            mapPublicIpOnLaunch: false,
+            tags: [{ key: 'Name', value: cfg.prefixName(`private-subnet-${s.suffix}`) }],
+          }),
       );
       if (!subnet) return;
       this.privateSubnets.push(subnet);
-      gated(cfg.hasPrivate, () =>
-        new ec2.CfnSubnetRouteTableAssociation(this, `PrivateSubnet${i + 1}RouteTableAssociation`, {
-          subnetId: subnet.ref,
-          routeTableId: this.privateRouteTable!.ref,
-        }),
+      gated(
+        cfg.hasPrivate,
+        () =>
+          new ec2.CfnSubnetRouteTableAssociation(this, `PrivateSubnet${i + 1}RouteTableAssociation`, {
+            subnetId: subnet.ref,
+            routeTableId: this.privateRouteTable!.ref,
+          }),
       );
     });
   }
@@ -410,60 +403,92 @@ export class VpcPublicPrivateSetup extends Construct {
     const natPublicIp = gated(cfg.useNat, () => new ec2.CfnEIP(this, 'NatPublicIP', { domain: 'vpc' }));
     natPublicIp?.addResourceDependency(this.vpc);
 
-    this.natGateway = gated(cfg.useNat, () =>
-      new ec2.CfnNatGateway(this, 'NatGateway', {
-        allocationId: natPublicIp!.attrAllocationId,
-        subnetId: this.publicSubnets[0].ref,
-        tags: [{ key: 'Name', value: cfg.prefixName('NatGateway') }],
-      }),
+    this.natGateway = gated(
+      cfg.useNat,
+      () =>
+        new ec2.CfnNatGateway(this, 'NatGateway', {
+          allocationId: natPublicIp!.attrAllocationId,
+          subnetId: this.publicSubnets[0].ref,
+          tags: [{ key: 'Name', value: cfg.prefixName('NatGateway') }],
+        }),
     );
 
     // Managed NAT layout only. In custom-routing mode the gateway instance writes
     // this route at boot instead (see the boot script).
-    gated(cfg.useNat, () =>
-      new ec2.CfnRoute(this, 'PrivateRoute', {
-        routeTableId: this.privateRouteTable!.ref,
-        destinationCidrBlock: '0.0.0.0/0',
-        natGatewayId: this.natGateway!.ref,
-      }),
+    gated(
+      cfg.useNat,
+      () =>
+        new ec2.CfnRoute(this, 'PrivateRoute', {
+          routeTableId: this.privateRouteTable!.ref,
+          destinationCidrBlock: '0.0.0.0/0',
+          natGatewayId: this.natGateway!.ref,
+        }),
     );
   }
 
   private createCustomGateway(cfg: Cfg) {
-    this.vpnBucket = gated(cfg.useCustom, () =>
-      new s3.CfnBucket(this, 'CustomGwVpnBucket', {
-        bucketEncryption: {
-          serverSideEncryptionConfiguration: [{ serverSideEncryptionByDefault: { sseAlgorithm: 'AES256' } }],
-        },
-        publicAccessBlockConfiguration: {
-          blockPublicAcls: true,
-          blockPublicPolicy: true,
-          ignorePublicAcls: true,
-          restrictPublicBuckets: true,
-        },
-        tags: [{ key: 'Name', value: cfg.prefixName('custom-gw-vpn') }],
-      }),
+    this.vpnBucket = gated(
+      cfg.useCustom,
+      () =>
+        new s3.CfnBucket(this, 'CustomGwVpnBucket', {
+          bucketEncryption: {
+            serverSideEncryptionConfiguration: [{ serverSideEncryptionByDefault: { sseAlgorithm: 'AES256' } }],
+          },
+          publicAccessBlockConfiguration: {
+            blockPublicAcls: true,
+            blockPublicPolicy: true,
+            ignorePublicAcls: true,
+            restrictPublicBuckets: true,
+          },
+          tags: [{ key: 'Name', value: cfg.prefixName('custom-gw-vpn') }],
+        }),
     );
+
+    // Refuse any non-TLS request to the VPN bucket. The files it holds (the
+    // .ovpn profile and credentials.txt) are secrets, so reads must ride HTTPS.
+    gated(cfg.useCustom, () => {
+      const bucketArn = this.vpnBucket!.attrArn;
+      return new s3.CfnBucketPolicy(this, 'CustomGwVpnBucketPolicy', {
+        bucket: this.vpnBucket!.ref,
+        policyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Sid: 'DenyInsecureTransport',
+              Effect: 'Deny',
+              Principal: '*',
+              Action: 's3:*',
+              Resource: [bucketArn, Fn.join('', [bucketArn, '/*'])],
+              Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+            },
+          ],
+        },
+      });
+    });
 
     // Stack-owned Elastic IP: it outlives instance replacement, and each booting
     // instance re-associates it (see gw-bootstrap.sh) so the VPN tunnel's source
     // IP is stable and a peer-side IP allowlist keeps working across Spot churn.
-    this.customGwEip = gated(cfg.useCustom, () =>
-      new ec2.CfnEIP(this, 'CustomGwEip', {
-        domain: 'vpc',
-        tags: [{ key: 'Name', value: cfg.prefixName('custom-gw-eip') }],
-      }),
+    this.customGwEip = gated(
+      cfg.useCustom,
+      () =>
+        new ec2.CfnEIP(this, 'CustomGwEip', {
+          domain: 'vpc',
+          tags: [{ key: 'Name', value: cfg.prefixName('custom-gw-eip') }],
+        }),
     );
 
-    const securityGroup = gated(cfg.useCustom, () =>
-      new ec2.CfnSecurityGroup(this, 'CustomGwSecurityGroup', {
-        groupDescription: 'Custom routing gateway - allow all traffic from within the VPC',
-        vpcId: this.vpc.ref,
-        // Forwards private-subnet traffic, so it must accept it. Egress is allow-all
-        // by default. No world-facing ingress; manage the box via SSM.
-        securityGroupIngress: [{ ipProtocol: '-1', cidrIp: this.vpc.attrCidrBlock }],
-        tags: [{ key: 'Name', value: cfg.prefixName('custom-gw-sg') }],
-      }),
+    const securityGroup = gated(
+      cfg.useCustom,
+      () =>
+        new ec2.CfnSecurityGroup(this, 'CustomGwSecurityGroup', {
+          groupDescription: 'Custom routing gateway - allow all traffic from within the VPC',
+          vpcId: this.vpc.ref,
+          // Forwards private-subnet traffic, so it must accept it. Egress is allow-all
+          // by default. No world-facing ingress; manage the box via SSM.
+          securityGroupIngress: [{ ipProtocol: '-1', cidrIp: this.vpc.attrCidrBlock }],
+          tags: [{ key: 'Name', value: cfg.prefixName('custom-gw-sg') }],
+        }),
     );
 
     const role = gated(cfg.useCustom, () => {
@@ -492,7 +517,12 @@ export class VpcPublicPrivateSetup extends Construct {
               Version: '2012-10-17',
               Statement: [
                 // Create/re-point the private default route to this instance.
-                { Sid: 'ManageDefaultRoute', Effect: 'Allow', Action: ['ec2:CreateRoute', 'ec2:ReplaceRoute'], Resource: routeTableArn },
+                {
+                  Sid: 'ManageDefaultRoute',
+                  Effect: 'Allow',
+                  Action: ['ec2:CreateRoute', 'ec2:ReplaceRoute'],
+                  Resource: routeTableArn,
+                },
                 // Disable this instance's source/dest check. Scoped by the gateway tag.
                 {
                   Sid: 'DisableSourceDestCheck',
@@ -549,8 +579,9 @@ export class VpcPublicPrivateSetup extends Construct {
       });
     });
 
-    const instanceProfile = gated(cfg.useCustom, () =>
-      new iam.CfnInstanceProfile(this, 'CustomGwInstanceProfile', { path: '/', roles: [role!.ref] }),
+    const instanceProfile = gated(
+      cfg.useCustom,
+      () => new iam.CfnInstanceProfile(this, 'CustomGwInstanceProfile', { path: '/', roles: [role!.ref] }),
     );
 
     // Boot script is a real .sh file, inlined here. It is an Fn::Sub template.
@@ -562,26 +593,30 @@ export class VpcPublicPrivateSetup extends Construct {
     // (Stack.getLogicalId returns the pre-override allocated id).
     const asgLogicalId = Lazy.string({ produce: () => this.gatewayAsg!.logicalId });
 
-    const launchTemplate = gated(cfg.useCustom, () =>
-      new ec2.CfnLaunchTemplate(this, 'CustomGwLaunchTemplate', {
-        launchTemplateData: {
-          // Latest region-appropriate Amazon Linux 2023 AMI, resolved at deploy time.
-          imageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}',
-          instanceType: cfg.gatewayInstanceType,
-          securityGroupIds: [securityGroup!.ref],
-          iamInstanceProfile: { name: instanceProfile!.ref },
-          metadataOptions: { httpTokens: 'required' },
-          userData: Fn.base64(
-            Fn.sub(bootScript, {
-              AsgLogicalId: asgLogicalId,
-              PrivateRouteTable: this.privateRouteTable!.ref,
-              CustomGwVpnBucket: this.vpnBucket!.ref,
-              CustomGwEipAllocId: this.customGwEip!.attrAllocationId,
-            }),
-          ),
-          tagSpecifications: [{ resourceType: 'instance', tags: [{ key: 'Name', value: cfg.prefixName('custom-gw') }] }],
-        },
-      }),
+    const launchTemplate = gated(
+      cfg.useCustom,
+      () =>
+        new ec2.CfnLaunchTemplate(this, 'CustomGwLaunchTemplate', {
+          launchTemplateData: {
+            // Latest region-appropriate Amazon Linux 2023 AMI, resolved at deploy time.
+            imageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}',
+            instanceType: cfg.gatewayInstanceType,
+            securityGroupIds: [securityGroup!.ref],
+            iamInstanceProfile: { name: instanceProfile!.ref },
+            metadataOptions: { httpTokens: 'required' },
+            userData: Fn.base64(
+              Fn.sub(bootScript, {
+                AsgLogicalId: asgLogicalId,
+                PrivateRouteTable: this.privateRouteTable!.ref,
+                CustomGwVpnBucket: this.vpnBucket!.ref,
+                CustomGwEipAllocId: this.customGwEip!.attrAllocationId,
+              }),
+            ),
+            tagSpecifications: [
+              { resourceType: 'instance', tags: [{ key: 'Name', value: cfg.prefixName('custom-gw') }] },
+            ],
+          },
+        }),
     );
 
     this.gatewayAsg = gated(cfg.useCustom, () => {
@@ -643,13 +678,15 @@ export class VpcPublicPrivateSetup extends Construct {
     // little data processing. Off by default (see enableSsmEndpoints); putting
     // them in all three AZs would triple that, and the gateway is a single
     // instance anyway, so one AZ matches the rest of the design.
-    const ssmEndpointSg = gated(cfg.ssmEndpointsOn, () =>
-      new ec2.CfnSecurityGroup(this, 'SsmEndpointSecurityGroup', {
-        groupDescription: 'HTTPS from the VPC to the SSM interface endpoints',
-        vpcId: this.vpc.ref,
-        securityGroupIngress: [{ ipProtocol: 'tcp', fromPort: 443, toPort: 443, cidrIp: this.vpc.attrCidrBlock }],
-        tags: [{ key: 'Name', value: cfg.prefixName('ssm-endpoint-sg') }],
-      }),
+    const ssmEndpointSg = gated(
+      cfg.ssmEndpointsOn,
+      () =>
+        new ec2.CfnSecurityGroup(this, 'SsmEndpointSecurityGroup', {
+          groupDescription: 'HTTPS from the VPC to the SSM interface endpoints',
+          vpcId: this.vpc.ref,
+          securityGroupIngress: [{ ipProtocol: 'tcp', fromPort: 443, toPort: 443, cidrIp: this.vpc.attrCidrBlock }],
+          tags: [{ key: 'Name', value: cfg.prefixName('ssm-endpoint-sg') }],
+        }),
     );
 
     for (const svc of [
@@ -657,62 +694,75 @@ export class VpcPublicPrivateSetup extends Construct {
       { key: 'ssmmessages', id: 'SsmMessagesEndpoint' },
       { key: 'ec2messages', id: 'Ec2MessagesEndpoint' },
     ]) {
-      const endpoint = gated(cfg.ssmEndpointsOn, () =>
-        new ec2.CfnVPCEndpoint(this, svc.id, {
-          vpcId: this.vpc.ref,
-          serviceName: Fn.sub(`com.amazonaws.\${AWS::Region}.${svc.key}`),
-          vpcEndpointType: 'Interface',
-          privateDnsEnabled: true,
-          // One AZ only, to keep the per-ENI cost down (see the note above).
-          subnetIds: [this.privateSubnets[0].ref],
-          securityGroupIds: [ssmEndpointSg!.ref],
-        }),
+      const endpoint = gated(
+        cfg.ssmEndpointsOn,
+        () =>
+          new ec2.CfnVPCEndpoint(this, svc.id, {
+            vpcId: this.vpc.ref,
+            serviceName: Fn.sub(`com.amazonaws.\${AWS::Region}.${svc.key}`),
+            vpcEndpointType: 'Interface',
+            privateDnsEnabled: true,
+            // One AZ only, to keep the per-ENI cost down (see the note above).
+            subnetIds: [this.privateSubnets[0].ref],
+            securityGroupIds: [ssmEndpointSg!.ref],
+          }),
       );
       if (endpoint) this.ssmEndpoints.push(endpoint);
     }
   }
 
   private createFlowLogs(cfg: Cfg) {
-    this.logGroup = gated(cfg.flowLogsOn, () =>
-      // No explicit LogGroupName: CloudFormation auto-generates a unique one, so
-      // multiple instances never collide.
-      new logs.CfnLogGroup(this, 'LogGroup', { retentionInDays: cfg.retentionInDays }),
+    this.logGroup = gated(
+      cfg.flowLogsOn,
+      () =>
+        // No explicit LogGroupName: CloudFormation auto-generates a unique one, so
+        // multiple instances never collide.
+        new logs.CfnLogGroup(this, 'LogGroup', { retentionInDays: cfg.retentionInDays }),
     );
 
-    const role = gated(cfg.flowLogsOn, () =>
-      new iam.CfnRole(this, 'Role', {
-        assumeRolePolicyDocument: {
-          Version: '2012-10-17',
-          Statement: [
-            { Effect: 'Allow', Principal: { Service: ['vpc-flow-logs.amazonaws.com'] }, Action: 'sts:AssumeRole' },
-          ],
-        },
-        policies: [
-          {
-            policyName: 'flowlogs-policy',
-            policyDocument: {
-              Version: '2012-10-17',
-              Statement: [
-                {
-                  Effect: 'Allow',
-                  Action: ['logs:CreateLogStream', 'logs:PutLogEvents', 'logs:DescribeLogGroups', 'logs:DescribeLogStreams'],
-                  Resource: this.logGroup!.attrArn,
-                },
-              ],
-            },
+    const role = gated(
+      cfg.flowLogsOn,
+      () =>
+        new iam.CfnRole(this, 'Role', {
+          assumeRolePolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              { Effect: 'Allow', Principal: { Service: ['vpc-flow-logs.amazonaws.com'] }, Action: 'sts:AssumeRole' },
+            ],
           },
-        ],
-      }),
+          policies: [
+            {
+              policyName: 'flowlogs-policy',
+              policyDocument: {
+                Version: '2012-10-17',
+                Statement: [
+                  {
+                    Effect: 'Allow',
+                    Action: [
+                      'logs:CreateLogStream',
+                      'logs:PutLogEvents',
+                      'logs:DescribeLogGroups',
+                      'logs:DescribeLogStreams',
+                    ],
+                    Resource: this.logGroup!.attrArn,
+                  },
+                ],
+              },
+            },
+          ],
+        }),
     );
 
-    this.flowLog = gated(cfg.flowLogsOn, () =>
-      new ec2.CfnFlowLog(this, 'FlowLog', {
-        deliverLogsPermissionArn: role!.attrArn,
-        logGroupName: this.logGroup!.ref,
-        resourceId: this.vpc.ref,
-        resourceType: 'VPC',
-        trafficType: cfg.trafficType,
-      }),
+    this.flowLog = gated(
+      cfg.flowLogsOn,
+      () =>
+        new ec2.CfnFlowLog(this, 'FlowLog', {
+          deliverLogsPermissionArn: role!.attrArn,
+          logGroupName: this.logGroup!.ref,
+          resourceId: this.vpc.ref,
+          resourceType: 'VPC',
+          trafficType: cfg.trafficType,
+        }),
     );
   }
 
@@ -724,12 +774,14 @@ export class VpcPublicPrivateSetup extends Construct {
     });
 
     this.privateSubnets.forEach((subnet, i) => {
-      gatedOutput(cfg.hasPrivate, () =>
-        new CfnOutput(this, `PrivateSubnet${i + 1}ID`, {
-          description: `Private Subnet ${PRIVATE_SUBNET_SPECS[i].suffix} ID`,
-          value: subnet.ref,
-          exportName: Fn.sub(`\${AWS::StackName}-privateSubnetID${i + 1}`),
-        }),
+      gatedOutput(
+        cfg.hasPrivate,
+        () =>
+          new CfnOutput(this, `PrivateSubnet${i + 1}ID`, {
+            description: `Private Subnet ${PRIVATE_SUBNET_SPECS[i].suffix} ID`,
+            value: subnet.ref,
+            exportName: Fn.sub(`\${AWS::StackName}-privateSubnetID${i + 1}`),
+          }),
       );
     });
 
@@ -741,45 +793,55 @@ export class VpcPublicPrivateSetup extends Construct {
       });
     });
 
-    gatedOutput(cfg.flowLogsOn, () =>
-      new CfnOutput(this, 'LogGroupARN', {
-        description: 'The name of the CloudWatch Logs log group where the flow logs will be published.',
-        value: this.logGroup!.attrArn,
-      }),
+    gatedOutput(
+      cfg.flowLogsOn,
+      () =>
+        new CfnOutput(this, 'LogGroupARN', {
+          description: 'The name of the CloudWatch Logs log group where the flow logs will be published.',
+          value: this.logGroup!.attrArn,
+        }),
     );
 
-    gatedOutput(cfg.useCustom, () =>
-      new CfnOutput(this, 'CustomGatewayASGName', {
-        description: 'Auto Scaling group name of the custom routing gateway.',
-        value: this.gatewayAsg!.ref,
-      }),
+    gatedOutput(
+      cfg.useCustom,
+      () =>
+        new CfnOutput(this, 'CustomGatewayASGName', {
+          description: 'Auto Scaling group name of the custom routing gateway.',
+          value: this.gatewayAsg!.ref,
+        }),
     );
 
-    gatedOutput(cfg.useCustom, () =>
-      new CfnOutput(this, 'CustomGatewayVpnBucket', {
-        description:
-          'Bucket the gateway reads VPN client files from. Upload your config here, then wire the TODO block in the gateway UserData.',
-        value: this.vpnBucket!.ref,
-        exportName: Fn.sub('${AWS::StackName}-customGwVpnBucket'),
-      }),
+    gatedOutput(
+      cfg.useCustom,
+      () =>
+        new CfnOutput(this, 'CustomGatewayVpnBucket', {
+          description:
+            'Bucket the gateway reads VPN client files from. Upload your config here, then wire the TODO block in the gateway UserData.',
+          value: this.vpnBucket!.ref,
+          exportName: Fn.sub('${AWS::StackName}-customGwVpnBucket'),
+        }),
     );
 
-    gatedOutput(cfg.useCustom, () =>
-      new CfnOutput(this, 'CustomGatewayEip', {
-        description:
-          "The gateway's stable Elastic IP. This is the VPN tunnel's source address; allowlist it on the VPN peer.",
-        value: this.customGwEip!.ref,
-        exportName: Fn.sub('${AWS::StackName}-customGwEip'),
-      }),
+    gatedOutput(
+      cfg.useCustom,
+      () =>
+        new CfnOutput(this, 'CustomGatewayEip', {
+          description:
+            "The gateway's stable Elastic IP. This is the VPN tunnel's source address; allowlist it on the VPN peer.",
+          value: this.customGwEip!.ref,
+          exportName: Fn.sub('${AWS::StackName}-customGwEip'),
+        }),
     );
 
-    gatedOutput(cfg.useCustom, () =>
-      new CfnOutput(this, 'PrivateRouteTableId', {
-        description:
-          'Private route table id. Its 0.0.0.0/0 route is managed by the custom gateway instance at boot; handy for confirming the route target.',
-        value: this.privateRouteTable!.ref,
-        exportName: Fn.sub('${AWS::StackName}-privateRouteTableId'),
-      }),
+    gatedOutput(
+      cfg.useCustom,
+      () =>
+        new CfnOutput(this, 'PrivateRouteTableId', {
+          description:
+            'Private route table id. Its 0.0.0.0/0 route is managed by the custom gateway instance at boot; handy for confirming the route target.',
+          value: this.privateRouteTable!.ref,
+          exportName: Fn.sub('${AWS::StackName}-privateRouteTableId'),
+        }),
     );
   }
 }

@@ -76,6 +76,20 @@ aws ec2 describe-route-tables --route-table-ids <PrivateRouteTableId> \
 
 Reach the instance through SSM Session Manager. It carries `AmazonSSMManagedInstanceCore` and has no open inbound ports.
 
+For example, for building
+
+```bash
+cd cdk
+make deploy CDK_ARGS="\
+  --parameters NetworkMode=PublicPrivateCustomRouting \
+  --parameters GatewayCapacityMode=SpotCapacityOptimized \
+  --parameters GatewayInstanceType=t3.micro \
+  --parameters EnableFlowLogs=false \
+  --parameters EnableSsmEndpoints=false \
+  --parameters ResourcesPrefixName=custom-gw-net \
+  --require-approval never"
+```
+
 ## Build
 
 A Makefile in `cdk/` regenerates the template from the CDK app:
@@ -85,12 +99,13 @@ cd cdk
 make synth      # write ../cdk-vpc-vpn-gw.yaml from the CDK app
 make deploy     # deploy with cdk deploy (see above)
 make build      # compile the construct to dist/
-make test       # run the jest unit tests
+make lint       # eslint + prettier check (make lint-fix to auto-fix)
+make test       # lint, then jest (unit tests + cdk-nag AwsSolutions checks)
 make compare    # structural diff against a local reference backup
 make clean      # remove node_modules and cdk.out
 ```
 
-`make synth` and `make deploy` install dependencies first. The stack synthesizes with `CliCredentialsStackSynthesizer`, so the output carries no bootstrap parameters. A GitHub Actions workflow re-runs the synth on every push to `main` or `dev` and commits the regenerated YAML back, so the committed template always matches `cdk/`. After editing CDK source locally, run `make synth` and commit the result.
+`make test` is the full gate. It runs ESLint, Prettier, the Jest suite, and cdk-nag's AwsSolutions best-practice and security checks. `make synth` and `make deploy` install dependencies first. The stack synthesizes with `CliCredentialsStackSynthesizer`, so the output carries no bootstrap parameters. A GitHub Actions workflow runs `make test` on every push and pull request, then on pushes to `main` or `dev` re-runs the synth and commits the regenerated YAML back, so the committed template always matches `cdk/`. After editing CDK source locally, run `make synth` and commit the result.
 
 ## Network modes
 

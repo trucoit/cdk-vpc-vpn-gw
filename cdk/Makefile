@@ -26,7 +26,7 @@ endif
 
 ##
 # PHONY Targets - will always run
-.PHONY: prechecks install build test synth template deploy compare clean all
+.PHONY: prechecks install build lint lint-fix test synth template deploy compare clean all
 
 ##
 # Targets
@@ -46,8 +46,24 @@ build: install
 	@npx tsc -p tsconfig.build.json
 	@echo -e "[OK] - Built dist/\n"
 
-# Run the unit tests (both the parametric and props paths).
-test: install
+# Lint and format-check the TypeScript sources and JS tooling. ESLint for code
+# quality, Prettier for formatting. Run 'make lint-fix' to auto-fix both.
+lint: install
+	@echo -e "\nLinting (eslint + prettier)..."
+	@npx eslint .
+	@npx prettier --check .
+	@echo -e "[OK] - Lint passed\n"
+
+lint-fix: install
+	@echo -e "\nFixing lint and formatting..."
+	@npx eslint . --fix
+	@npx prettier --write .
+	@echo -e "[OK] - Lint fixed\n"
+
+# Full test gate: lint + format check, then the jest suite. Jest runs both the
+# unit tests (parametric and props paths) and the cdk-nag AwsSolutions checks.
+# This is the single target CI invokes.
+test: install lint
 	@echo -e "\nRunning tests..."
 	@npx jest
 	@echo -e "[OK] - Tests passed\n"

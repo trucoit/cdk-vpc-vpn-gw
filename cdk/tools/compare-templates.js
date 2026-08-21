@@ -21,8 +21,22 @@ if (!originalPath || !generatedPath) {
 // Map CloudFormation short tags (!Ref, !Sub, ...) to their long form so the
 // parsed original matches the shape CDK emits in JSON.
 const TAGS = [
-  'Ref', 'Sub', 'GetAtt', 'Select', 'GetAZs', 'FindInMap', 'Equals', 'Not',
-  'And', 'Or', 'If', 'Base64', 'Join', 'Split', 'Cidr', 'ImportValue',
+  'Ref',
+  'Sub',
+  'GetAtt',
+  'Select',
+  'GetAZs',
+  'FindInMap',
+  'Equals',
+  'Not',
+  'And',
+  'Or',
+  'If',
+  'Base64',
+  'Join',
+  'Split',
+  'Cidr',
+  'ImportValue',
 ];
 const buildType = (name, kind) =>
   new yaml.Type(`!${name}`, {
@@ -67,8 +81,7 @@ report('Parameters', keys(original, 'Parameters'), keys(generated, 'Parameters')
 report('Conditions', keys(original, 'Conditions'), keys(generated, 'Conditions'));
 report('Mappings', keys(original, 'Mappings'), keys(generated, 'Mappings'));
 
-const resTypes = (obj) =>
-  Object.entries((obj && obj.Resources) || {}).map(([k, v]) => `${k}:${v.Type}`);
+const resTypes = (obj) => Object.entries((obj && obj.Resources) || {}).map(([k, v]) => `${k}:${v.Type}`);
 report('Resources (id:type)', resTypes(original), resTypes(generated));
 
 const exportName = (out) => {
@@ -78,8 +91,7 @@ const exportName = (out) => {
   if (n['Fn::Sub']) return n['Fn::Sub'];
   return JSON.stringify(n);
 };
-const outs = (obj) =>
-  Object.entries((obj && obj.Outputs) || {}).map(([k, v]) => `${k}=>${exportName(v)}`);
+const outs = (obj) => Object.entries((obj && obj.Outputs) || {}).map(([k, v]) => `${k}=>${exportName(v)}`);
 report('Outputs (id=>export)', outs(original), outs(generated));
 
 console.log('');
@@ -87,6 +99,4 @@ if (failures) {
   console.log(`Structural differences found in ${failures} section(s).`);
   process.exit(1);
 }
-console.log(
-  'Templates are structurally equivalent (parameters, conditions, mappings, resources, outputs).',
-);
+console.log('Templates are structurally equivalent (parameters, conditions, mappings, resources, outputs).');

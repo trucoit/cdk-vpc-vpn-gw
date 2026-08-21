@@ -388,6 +388,32 @@ Resources:
           Value:
             Fn::Sub: ${ResourcesPrefixName}-custom-gw-vpn
     Condition: UseCustomGateway
+  CustomGwVpnBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: CustomGwVpnBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - Fn::GetAtt:
+                  - CustomGwVpnBucket
+                  - Arn
+              - Fn::Join:
+                  - ""
+                  - - Fn::GetAtt:
+                        - CustomGwVpnBucket
+                        - Arn
+                    - /*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+    Condition: UseCustomGateway
   CustomGwEip:
     Type: AWS::EC2::EIP
     Properties:

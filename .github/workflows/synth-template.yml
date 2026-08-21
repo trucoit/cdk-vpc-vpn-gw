@@ -9,6 +9,11 @@ on:
       - 'cdk/**'
       - 'cdk-vpc-vpn-gw.yaml'
       - '.github/workflows/synth-template.yml'
+  pull_request:
+    paths:
+      - 'cdk/**'
+      - 'cdk-vpc-vpn-gw.yaml'
+      - '.github/workflows/synth-template.yml'
 
 # Let the job push the regenerated template back to the branch.
 permissions:
@@ -35,11 +40,16 @@ jobs:
           cache: npm
           cache-dependency-path: cdk/package-lock.json
 
+      - name: Run tests
+        working-directory: cdk
+        run: make test
+
       - name: Synthesize template
         working-directory: cdk
         run: make template
 
       - name: Commit regenerated template
+        if: github.event_name == 'push'
         run: |
           if git diff --quiet -- cdk-vpc-vpn-gw.yaml; then
             echo "Template unchanged, nothing to commit."
