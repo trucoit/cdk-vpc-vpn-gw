@@ -125,7 +125,7 @@ A systemd timer runs a check about once a minute. It confirms the private route 
 
 ### Turn on the VPN
 
-Custom mode runs a real OpenVPN client. The stack creates a private, encrypted S3 bucket for the VPN files, whose name comes back as the `CustomGatewayVpnBucket` output.
+Custom mode runs a real OpenVPN client. The stack creates a private, encrypted S3 bucket for the VPN files, whose name comes back as the `CustomGatewayVpnBucket` output. For the full upload procedure, the profile format, and the warnings, see [vpn-setup.md](vpn-setup.md). The short version:
 
 1. Upload an OpenVPN profile to the bucket, for example `aws s3 cp client.ovpn s3://<CustomGatewayVpnBucket>/`. Certs and keys can be embedded in the file.
 2. For a username/password profile (NordVPN and most commercial providers), also upload a `credentials.txt` with the username on line 1 and the password on line 2, with `printf '%s\n%s\n' USER PASS > credentials.txt && aws s3 cp credentials.txt s3://<CustomGatewayVpnBucket>/`. The boot script points the profile's bare `auth-user-pass` at it and locks the file to `0600`, so the tunnel comes up without a prompt. With NordVPN use the service credentials from the dashboard, not your account login.

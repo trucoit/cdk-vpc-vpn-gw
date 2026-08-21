@@ -1,4 +1,4 @@
-# vpc-public-private-setup
+# cdk-vpc-vpn-gw
 
 | Branch | Build                            |
 | :----: | :------------------------------: |
@@ -19,6 +19,7 @@ Deep dive on the custom gateway and the operational caveats live in [docs/archit
 
 - [Deploy](#deploy)
   - [Deploy with the CDK](#deploy-with-the-cdk)
+- [Turn on the VPN](#turn-on-the-vpn)
 - [Build](#build)
 - [Network modes](#network-modes)
 - [Parameters](#parameters)
@@ -54,7 +55,7 @@ aws cloudformation deploy \
 
 `CAPABILITY_IAM` is required only in custom mode, for the gateway's instance role. There is no transform, so no `CAPABILITY_AUTO_EXPAND`.
 
-Custom mode comes up fail-closed. Private egress stays dropped until you upload a VPN profile and refresh the gateway. See [Turn on the VPN](docs/architecture.md#turn-on-the-vpn).
+Custom mode comes up fail-closed. Private egress stays dropped until you upload a VPN profile and refresh the gateway. See [Turn on the VPN](#turn-on-the-vpn).
 
 ### Deploy with the CDK
 
@@ -98,6 +99,28 @@ make deploy CDK_ARGS="\
   --parameters ResourcesPrefixName=custom-gw-net \
   --require-approval never"
 ```
+
+## Turn on the VPN
+
+Custom mode is a fail-closed VPN router. It creates a private, encrypted S3 bucket for the OpenVPN client files, and until a valid profile is there the gateway drops all private egress. Routing private traffic through your VPN is the point of this mode, so this is the step that makes it work.
+
+Get the bucket name from the `CustomGatewayVpnBucket` output, upload one profile, then refresh the gateway to pull it:
+
+```bash
+BUCKET=$(aws cloudformation describe-stacks --stack-name my-vpc \
+  --query "Stacks[0].Outputs[?OutputKey=='CustomGatewayVpnBucket'].OutputValue" --output text)
+
+aws s3 cp client.ovpn "s3://$BUCKET/"
+
+# Username/password providers (NordVPN and similar) also need credentials.txt,
+# username on line 1, password on line 2:
+printf '%s\n%s\n' 'SERVICE_USERNAME' 'SERVICE_PASSWORD' > credentials.txt
+aws s3 cp credentials.txt "s3://$BUCKET/"
+```
+
+The gateway reads the bucket only at boot, so terminate the instance (the Auto Scaling group relaunches it) or start an instance refresh to apply. Upload exactly one `.ovpn`/`.conf` profile with its certs and keys embedded inline.
+
+Full procedure, the profile format, and the warnings are in [docs/vpn-setup.md](docs/vpn-setup.md).
 
 ## Build
 
@@ -170,4 +193,6 @@ Run `make build` to compile to `dist/`. The package stays `private`, so npm publ
 ## Docs
 
 - [Architecture and how the custom gateway works](docs/architecture.md)
+- [VPN profile setup](docs/vpn-setup.md). Upload the `.ovpn` to the bucket, the required format, and the warnings.
+- [Operations runbook](docs/operations.md). Connect over SSM and check the kill switch, tunnel, watchdog, and routing.
 - [Things to know](docs/architecture.md#things-to-know)
