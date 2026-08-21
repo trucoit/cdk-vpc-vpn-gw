@@ -1,7 +1,7 @@
 # vpc-public-private-setup
 
 | Branch | Build                            |
-| :----- | :------------------------------- |
+| :----: | :------------------------------: |
 | `main` | [![main][main-badge]][workflow]  |
 | `dev`  | [![dev][dev-badge]][workflow]    |
 
