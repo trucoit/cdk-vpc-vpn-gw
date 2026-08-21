@@ -26,22 +26,22 @@ In custom mode a single EC2 instance in a size-1 Spot Auto Scaling group replace
                         │   IGW   │
                         └────┬────┘
   VPC 10.0.0.0/16            │
-  ┌──────────────────────────────────────────────────────────┐
-  │   AZ-a             AZ-b             AZ-c                    │
+  ┌────────────────────────────────────────────────────────────┐
+  │   AZ-a             AZ-b             AZ-c                   │
   │ ┌──────────┐    ┌──────────┐    ┌──────────┐  public RT    │
   │ │ public   │    │ public   │    │ public   │  0.0.0.0/0    │
-  │ │10.0.1/24 │    │10.0.2/24 │    │10.0.3/24 │    → IGW       │
+  │ │10.0.1/24 │    │10.0.2/24 │    │10.0.3/24 │    → IGW      │
   │ │ ┌──────┐ │    │          │    │          │               │
   │ │ │  GW  │ │    │          │    │          │               │
   │ │ └───▲──┘ │    │          │    │          │               │
   │ └─────┼────┘    └──────────┘    └──────────┘               │
-  │       │  the ASG places the one gateway wherever           │
-  │       │  Spot has capacity                                 │
+  │       │  ASG places one gateway wherever                   │
+  │       │           Spot has capacity                        │
   │ ┌─────┼────┐    ┌──────────┐    ┌──────────┐  private RT   │
   │ │ private  │    │ private  │    │ private  │  0.0.0.0/0    │
   │ │10.0.4/24 │    │10.0.5/24 │    │10.0.6/24 │  → GW inst id │
   │ └──────────┘    └──────────┘    └──────────┘               │
-  └──────────────────────────────────────────────────────────┘
+  └────────────────────────────────────────────────────────────┘
 ```
 
 All three private subnets share one route table. Its `0.0.0.0/0` targets the gateway's instance id, so a private subnet in one zone can route to a gateway in another. That single shared table is the difference from a per-AZ design, which would need one table and one gateway per zone.

@@ -1,5 +1,14 @@
 # vpc-public-private-setup
 
+| Branch | Build                            |
+| :----- | :------------------------------- |
+| `main` | [![main][main-badge]][workflow]  |
+| `dev`  | [![dev][dev-badge]][workflow]    |
+
+[workflow]: https://github.com/trucoit/cdk-vpc-vpn-gw/actions/workflows/synth-template.yml
+[main-badge]: https://github.com/trucoit/cdk-vpc-vpn-gw/actions/workflows/synth-template.yml/badge.svg?branch=main&event=push
+[dev-badge]: https://github.com/trucoit/cdk-vpc-vpn-gw/actions/workflows/synth-template.yml/badge.svg?branch=dev&event=push
+
 A CloudFormation template for a VPC with three public subnets across three Availability Zones and, optionally, three private subnets. `NetworkMode` picks how private egress works. Private subnets exit through a managed NAT gateway, or through a self-healing EC2 Spot instance you can turn into a VPN router.
 
 Generated from a TypeScript CDK app under [`cdk/`](cdk/). The synth output, `cdk-vpc-vpn-gw.yaml`, is the deployable artifact.
@@ -76,7 +85,7 @@ aws ec2 describe-route-tables --route-table-ids <PrivateRouteTableId> \
 
 Reach the instance through SSM Session Manager. It carries `AmazonSSMManagedInstanceCore` and has no open inbound ports.
 
-For example, for building
+For example, for building a simple custom Gateway setup:
 
 ```bash
 cd cdk

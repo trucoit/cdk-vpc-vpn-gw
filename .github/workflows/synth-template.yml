@@ -1,4 +1,4 @@
-name: Synth CloudFormation template
+name: build
 
 # Regenerate the deployable template from the CDK app on every push and commit
 # it back to the repo root, so cdk-vpc-vpn-gw.yaml always matches cdk/.
