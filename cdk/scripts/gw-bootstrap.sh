@@ -6,6 +6,13 @@
 # a check fail naturally over `exit 1` (a bare `exit` does NOT fire an ERR trap).
 trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackId} --resource ${AsgLogicalId} --region ${AWS::Region}' ERR
 
+# The helper scripts and unit files this bootstrap writes live as real, editable
+# files under scripts/gw-files/. A line of the form `#@include gw-files/<name>`
+# (always the sole body of a heredoc here) is replaced with that file's verbatim
+# contents at synth time by assembleBootstrap() in cdk/lib/vpc-public-private-setup.ts,
+# before the whole script is wrapped in Fn::Sub. The result is one user-data blob,
+# so `${...}` still resolves as CloudFormation substitutions everywhere below.
+
 #################################
 # Metadata and interface
 ##
@@ -38,10 +45,7 @@ dnf install -y htop || true
 # resolves to eth0 rather than tun0. IPv6 forwarding stays off so a future IPv6
 # CIDR can't slip past the switch.
 cat > /etc/sysctl.d/99-custom-gw.conf <<'SYSCTL'
-net.ipv4.ip_forward = 1
-net.ipv4.conf.all.rp_filter = 2
-net.ipv4.conf.default.rp_filter = 2
-net.ipv6.conf.all.forwarding = 0
+#@include gw-files/99-custom-gw.conf
 SYSCTL
 sysctl -p /etc/sysctl.d/99-custom-gw.conf
 
@@ -92,51 +96,12 @@ LAN_IF=$(ip route show default | awk '{print $5; exit}')
 echo "$LAN_IF" > /etc/gw-lan-if
 
 cat > /usr/local/sbin/gw-killswitch.sh <<'KILLSWITCH'
-#!/bin/bash
-set -e
-LAN_IF=$(cat /etc/gw-lan-if)
-iptables -F FORWARD
-iptables -t nat -F POSTROUTING
-iptables -t mangle -F FORWARD
-
-iptables -P FORWARD DROP
-if [ "${VpnEnabled}" = "true" ]; then
-  # VPN router (fail-closed): forward only between the LAN NIC and the tunnel, and
-  # NAT out tun0. When the tunnel is down, forwarded packets hit the DROP policy and
-  # nothing falls back to the public path.
-  # outbound, only traffic forwarded from the LAN NIC into the tunnel
-  iptables -A FORWARD -i "$LAN_IF" -o tun0 -j ACCEPT
-  # return, only established replies coming back from the tunnel to the LAN NIC
-  iptables -A FORWARD -i tun0 -o "$LAN_IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # NAT everything leaving the tunnel to the tunnel's address
-  iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE
-  # clamp MSS to the tunnel's lower path MTU so large TCP segments don't blackhole
-  iptables -t mangle -A FORWARD -p tcp --syn -o tun0 -j TCPMSS --clamp-mss-to-pmtu
-else
-  # Plain NAT instance (NOT fail-closed): forward LAN traffic out the primary NIC to
-  # the internet gateway and NAT it. Egress rides the public path, no tunnel.
-  iptables -A FORWARD -i "$LAN_IF" -j ACCEPT
-  iptables -A FORWARD -o "$LAN_IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  iptables -t nat -A POSTROUTING -o "$LAN_IF" -j MASQUERADE
-  iptables -t mangle -A FORWARD -p tcp --syn -o "$LAN_IF" -j TCPMSS --clamp-mss-to-pmtu
-fi
-# IPv6 has no forwarding path in either mode. Fail closed if a v6 CIDR appears.
-ip6tables -P FORWARD DROP 2>/dev/null || true
+#@include gw-files/gw-killswitch.sh
 KILLSWITCH
 chmod 0755 /usr/local/sbin/gw-killswitch.sh
 
 cat > /etc/systemd/system/gw-killswitch.service <<'UNIT'
-[Unit]
-Description=Custom gateway forwarding firewall (kill switch in VPN mode)
-After=network-pre.target
-Before=openvpn-client@tun-vpn.service
-Wants=network-pre.target
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/gw-killswitch.sh
-[Install]
-WantedBy=multi-user.target
+#@include gw-files/gw-killswitch.service
 UNIT
 
 systemctl daemon-reload
@@ -177,17 +142,7 @@ if [ -n "$SRC" ]; then
   grep -viE '^[[:space:]]*(dev|dev-type|redirect-gateway|route|route-nopull)([[:space:]]|$)' \
     "$SRC" > /etc/openvpn/client/tun-vpn.conf || true
   cat >> /etc/openvpn/client/tun-vpn.conf <<'OVPN'
-
-# Managed by gw-bootstrap.sh, do not edit
-dev tun0
-dev-type tun
-nobind
-persist-tun
-route-nopull
-script-security 2
-up   /etc/openvpn/client/tun-up.sh
-down /etc/openvpn/client/tun-down.sh
-mssfix 1360
+#@include gw-files/openvpn-overrides.conf
 OVPN
 
   # Username/password profiles (NordVPN and similar) carry a bare auth-user-pass
@@ -211,22 +166,12 @@ OVPN
   # /usr/sbin (where ip lives), so set PATH. set -e leaves the sentinel untouched
   # on failure, so the boot wait fails closed instead of coming up broken.
   cat > /etc/openvpn/client/tun-up.sh <<'TUNUP'
-#!/bin/bash
-set -e
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-LAN_IF=$(cat /etc/gw-lan-if)
-ip route replace default dev "$dev" table 100
-ip rule add iif "$LAN_IF" lookup 100 priority 100 2>/dev/null || true
-touch /run/gw-tunnel-up
+#@include gw-files/tun-up.sh
 TUNUP
   chmod 0755 /etc/openvpn/client/tun-up.sh
 
   cat > /etc/openvpn/client/tun-down.sh <<'TUNDOWN'
-#!/bin/bash
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-LAN_IF=$(cat /etc/gw-lan-if)
-ip rule del iif "$LAN_IF" lookup 100 priority 100 2>/dev/null || true
-rm -f /run/gw-tunnel-up
+#@include gw-files/tun-down.sh
 TUNDOWN
   chmod 0755 /etc/openvpn/client/tun-down.sh
 
@@ -291,71 +236,16 @@ aws ec2 replace-route --region ${AWS::Region} \
 # bring-up window, requires 5 consecutive failures, and tries one self-heal
 # restart before escalating. Tunnel checks only apply once a profile exists.
 cat > /usr/local/sbin/gw-healthcheck.sh <<'GWHC'
-#!/bin/bash
-# Don't judge health until boot finished (prevents a replacement loop).
-[ -f /run/gw-boot-complete ] || exit 0
-
-TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-          -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
-IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-          http://169.254.169.254/latest/meta-data/instance-id)
-PUBIP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-          http://169.254.169.254/latest/meta-data/public-ipv4)
-OK=1
-
-# The private default route must still target THIS instance.
-TARGET=$(aws ec2 describe-route-tables --region ${AWS::Region} \
-  --route-table-ids ${PrivateRouteTable} \
-  --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].InstanceId | [0]" \
-  --output text 2>/dev/null)
-[ "$TARGET" = "$IID" ] || OK=0
-
-# When a VPN profile is configured, the tunnel must be up and egress must
-# actually leave through it (exit IP differs from our own public IP / EIP).
-if [ -f /run/gw-vpn-configured ]; then
-  ip link show tun0 up >/dev/null 2>&1 || OK=0
-  TUNIP=$(curl -s --interface tun0 --max-time 5 https://checkip.amazonaws.com 2>/dev/null)
-  { [ -n "$TUNIP" ] && [ "$TUNIP" != "$PUBIP" ]; } || OK=0
-fi
-
-if [ "$OK" -ne 1 ]; then
-  # One bounded self-heal attempt before escalating.
-  systemctl restart openvpn-client@tun-vpn 2>/dev/null || true
-  sleep 15
-  RETRY=$(curl -s --interface tun0 --max-time 5 https://checkip.amazonaws.com 2>/dev/null)
-  if ip link show tun0 up >/dev/null 2>&1 \
-     && [ -n "$RETRY" ] && [ "$RETRY" != "$PUBIP" ] && [ "$TARGET" = "$IID" ]; then
-    rm -f /run/gw-fail-count
-    exit 0
-  fi
-  N=$(( $(cat /run/gw-fail-count 2>/dev/null || echo 0) + 1 ))
-  echo "$N" > /run/gw-fail-count
-  if [ "$N" -ge 5 ]; then
-    aws autoscaling set-instance-health --region ${AWS::Region} \
-      --instance-id "$IID" --health-status Unhealthy
-  fi
-else
-  rm -f /run/gw-fail-count
-fi
+#@include gw-files/gw-healthcheck.sh
 GWHC
 chmod 0755 /usr/local/sbin/gw-healthcheck.sh
 
 cat > /etc/systemd/system/gw-healthcheck.service <<'UNIT'
-[Unit]
-Description=Custom gateway route/tunnel health watchdog
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/gw-healthcheck.sh
+#@include gw-files/gw-healthcheck.service
 UNIT
 
 cat > /etc/systemd/system/gw-healthcheck.timer <<'UNIT'
-[Unit]
-Description=Run the custom gateway health watchdog periodically
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
-[Install]
-WantedBy=timers.target
+#@include gw-files/gw-healthcheck.timer
 UNIT
 
 systemctl daemon-reload

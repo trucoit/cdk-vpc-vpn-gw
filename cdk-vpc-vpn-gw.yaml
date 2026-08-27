@@ -569,6 +569,13 @@ Resources:
                 # a check fail naturally over `exit 1` (a bare `exit` does NOT fire an ERR trap).
                 trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackId} --resource ${AsgLogicalId} --region ${AWS::Region}' ERR
 
+                # The helper scripts and unit files this bootstrap writes live as real, editable
+                # files under scripts/gw-files/. A line of the form `#@include gw-files/<name>`
+                # (always the sole body of a heredoc here) is replaced with that file's verbatim
+                # contents at synth time by assembleBootstrap() in cdk/lib/vpc-public-private-setup.ts,
+                # before the whole script is wrapped in Fn::Sub. The result is one user-data blob,
+                # so `${...}` still resolves as CloudFormation substitutions everywhere below.
+
                 #################################
                 # Metadata and interface
                 ##

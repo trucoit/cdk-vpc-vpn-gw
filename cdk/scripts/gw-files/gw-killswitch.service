@@ -1,0 +1,11 @@
+[Unit]
+Description=Custom gateway forwarding firewall (kill switch in VPN mode)
+After=network-pre.target
+Before=openvpn-client@tun-vpn.service
+Wants=network-pre.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gw-killswitch.sh
+[Install]
+WantedBy=multi-user.target

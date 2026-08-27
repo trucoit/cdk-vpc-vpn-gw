@@ -1,7 +1,7 @@
-import { readFileSync } from 'fs';
 import { join } from 'path';
 import { CfnCondition, CfnMapping, CfnOutput, CfnParameter, CfnResource, Fn, Lazy, Stack, Token } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { assembleBootstrap } from './assemble-bootstrap';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -615,8 +615,11 @@ export class VpcPublicPrivateSetup extends Construct {
 
     // Boot script is a real .sh file, inlined here. It is an Fn::Sub template.
     // ${AWS::StackId}/${AWS::Region} resolve as pseudo-parameters; the resource
-    // refs and the ASG logical id are supplied through the variables map.
-    const bootScript = readFileSync(join(__dirname, '..', 'scripts', 'gw-bootstrap.sh'), 'utf8');
+    // refs and the ASG logical id are supplied through the variables map. The
+    // orchestrator's helper scripts / unit files live under scripts/gw-files/ and
+    // are pasted back in at synth via `#@include` anchors (see assembleBootstrap),
+    // so this is still one self-contained user-data blob.
+    const bootScript = assembleBootstrap(join(__dirname, '..', 'scripts'));
     // Lazy so it resolves after the ASG (and any logical-ID rewrite) exists.
     // Use the element's `.logicalId` getter, which honors overrideLogicalId
     // (Stack.getLogicalId returns the pre-override allocated id).

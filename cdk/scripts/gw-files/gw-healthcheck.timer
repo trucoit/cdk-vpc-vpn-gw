@@ -1,0 +1,7 @@
+[Unit]
+Description=Run the custom gateway health watchdog periodically
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target

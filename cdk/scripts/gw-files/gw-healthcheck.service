@@ -1,0 +1,5 @@
+[Unit]
+Description=Custom gateway route/tunnel health watchdog
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gw-healthcheck.sh
