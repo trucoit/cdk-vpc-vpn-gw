@@ -86,23 +86,11 @@ aws ec2 describe-route-tables --route-table-ids <PrivateRouteTableId> \
 
 Reach the instance through SSM Session Manager. It carries `AmazonSSMManagedInstanceCore` and has no open inbound ports.
 
-For example, for building a simple custom Gateway setup:
-
-```bash
-cd cdk
-make deploy CDK_ARGS="\
-  --parameters NetworkMode=PublicPrivateCustomRouting \
-  --parameters GatewayCapacityMode=SpotCapacityOptimized \
-  --parameters GatewayInstanceType=t3.micro \
-  --parameters EnableFlowLogs=false \
-  --parameters EnableSsmEndpoints=false \
-  --parameters ResourcesPrefixName=custom-gw-net \
-  --require-approval never"
-```
-
 ## Turn on the VPN
 
-Custom mode is a fail-closed VPN router. It creates a private, encrypted S3 bucket for the OpenVPN client files, and until a valid profile is there the gateway drops all private egress. Routing private traffic through your VPN is the point of this mode, so this is the step that makes it work.
+Custom mode is a fail-closed VPN router by default. It creates a private, encrypted S3 bucket for the OpenVPN client files, and until a valid profile is there the gateway drops all private egress. Routing private traffic through your VPN is the point of this mode, so this is the step that makes it work.
+
+If you only want a cheap NAT instance and no VPN, set `EnableVpn=false`. The gateway then NATs the private tier straight out through the internet gateway, with no tunnel and no profile needed. That path is NOT fail-closed, so skip the upload steps below.
 
 Get the bucket name from the `CustomGatewayVpnBucket` output, upload one profile, then refresh the gateway to pull it:
 
@@ -137,7 +125,7 @@ make compare    # structural diff against a local reference backup
 make clean      # remove node_modules and cdk.out
 ```
 
-`make test` is the full gate. It runs ESLint, Prettier, the Jest suite, and cdk-nag's AwsSolutions best-practice and security checks. `make synth` and `make deploy` install dependencies first. The stack synthesizes with `CliCredentialsStackSynthesizer`, so the output carries no bootstrap parameters. A GitHub Actions workflow runs `make test` on every push and pull request, then on pushes to `main` or `dev` re-runs the synth and commits the regenerated YAML back, so the committed template always matches `cdk/`. After editing CDK source locally, run `make synth` and commit the result.
+`make test` is the full gate (ESLint, Prettier, Jest, and cdk-nag's AwsSolutions checks). The stack synthesizes with `CliCredentialsStackSynthesizer`, so the output carries no bootstrap parameters. CI runs `make test` on every push and PR, and on pushes to `main`/`dev` re-synths and commits the regenerated YAML back, so the committed template always matches `cdk/`. After editing CDK source, run `make synth` and commit the result.
 
 ## Network modes
 
@@ -148,6 +136,12 @@ make clean      # remove node_modules and cdk.out
 | `PublicPrivateCustomRouting` | Adds the three private subnets, but replaces the NAT gateway with a size-1 Spot Auto Scaling group that routes and NATs private egress and can carry a VPN. |
 
 `PublicPrivate` reproduces the AWS-managed NAT path. `PublicPrivateCustomRouting` trades it for an instance you control, which is what lets you route private egress through a VPN. Flow logs work in any mode via `EnableFlowLogs=true`.
+
+> [!IMPORTANT]
+> The custom gateway is a single Spot instance with no high availability yet, so treat `PublicPrivateCustomRouting` as dev/test. A Spot reclaim or an AZ loss drops private egress until a replacement boots.
+
+> [!WARNING]
+> One gateway serves all three private subnets. Traffic from a subnet in a different AZ than the gateway crosses the AZ boundary at $0.01/GB in each direction. At high volume that cross-AZ transfer can dominate the bill.
 
 ## Parameters
 
@@ -160,6 +154,7 @@ make clean      # remove node_modules and cdk.out
 | `RetentionInDays` | `14` | Flow log retention. Flow logs only. |
 | `GatewayInstanceType` | `t3.micro` | Gateway instance type and first Spot override. Custom mode only. |
 | `GatewayCapacityMode` | `SpotLowestPrice` | `SpotLowestPrice`, `SpotCapacityOptimized`, or `OnDemand`. Custom mode only. |
+| `EnableVpn` | `true` | `true` runs the custom gateway as a fail-closed OpenVPN router. `false` runs it as a plain NAT instance that egresses through the IGW, NOT fail-closed. Custom mode only. |
 | `EnableSsmEndpoints` | `false` | SSM interface endpoints so private instances stay reachable when the tunnel is down. Custom mode only. Bills ~$22/month (three endpoints, one AZ). |
 
 Custom mode also creates a private S3 bucket for VPN files. It has no parameter. The bucket name comes back as an output.
@@ -184,7 +179,7 @@ new VpcPublicPrivateSetup(this, 'Network', {
 });
 ```
 
-Props are optional and mirror the [parameters](#parameters) above (`networkMode`, `resourcesPrefixName`, `enableFlowLogs`, `trafficType`, `retentionInDays`, `gatewayInstanceType`, `gatewayCapacityMode`). Omitting a field uses its default. Passing no props reproduces the parametric standalone template, which is what the bundled stack does.
+Props are optional and mirror the [parameters](#parameters) above (`networkMode`, `resourcesPrefixName`, `enableFlowLogs`, `trafficType`, `retentionInDays`, `gatewayInstanceType`, `gatewayCapacityMode`, `enableVpn`, `enableSsmEndpoints`). Omitting a field uses its default. Passing no props reproduces the parametric standalone template, which is what the bundled stack does.
 
 The construct exposes its resources as public fields (`vpc`, `publicSubnets`, `privateSubnets`, `privateRouteTable`, `natGateway`, `vpnBucket`, `gatewayAsg`, `logGroup`, `flowLog`) so you can wire other resources to them. The private-tier fields are `undefined` in modes that don't build them. Give each instance a distinct `resourcesPrefixName` when you create more than one in a stack, since the Auto Scaling group name and Name tags derive from it.
 

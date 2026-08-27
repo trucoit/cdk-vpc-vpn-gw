@@ -18,6 +18,7 @@ describe('standalone stack (parametric path)', () => {
         'EnableFlowLogs',
         'GatewayInstanceType',
         'GatewayCapacityMode',
+        'EnableVpn',
         'EnableSsmEndpoints',
       ]),
     );
@@ -56,6 +57,7 @@ describe('module use with props (PublicPrivate)', () => {
       'EnableFlowLogs',
       'GatewayInstanceType',
       'GatewayCapacityMode',
+      'EnableVpn',
       'EnableSsmEndpoints',
     ]) {
       expect(params).not.toContain(p);
@@ -109,8 +111,40 @@ describe('custom gateway (PublicPrivateCustomRouting)', () => {
     expect(raw).toContain('associate-address');
   });
 
+  test('runs the gateway in VPN mode by default', () => {
+    // The boot script branches on this Fn::Sub variable.
+    expect(raw).toContain('"VpnEnabled":"true"');
+  });
+
   test('creates no SSM endpoints by default (cost opt-in)', () => {
     template.resourceCountIs('AWS::EC2::VPCEndpoint', 0);
+  });
+});
+
+describe('custom gateway as a plain NAT instance (enableVpn false)', () => {
+  const app = new App();
+  const stack = new Stack(app, 'CustomGwNat');
+  new VpcPublicPrivateSetup(stack, 'Net', {
+    networkMode: 'PublicPrivateCustomRouting',
+    enableVpn: false,
+  });
+  const template = Template.fromStack(stack);
+  const raw = JSON.stringify(template.toJSON());
+
+  test('binds VpnEnabled false so the boot script takes the NAT branch', () => {
+    expect(raw).toContain('"VpnEnabled":"false"');
+  });
+
+  test('boot script still carries the NAT-instance firewall branch', () => {
+    // NOT fail-closed: forwards out the LAN NIC. Both branches live in the script;
+    // the VpnEnabled flag picks one at boot.
+    expect(raw).toContain('Plain NAT instance (NOT fail-closed)');
+  });
+
+  test('keeps the same resource graph as VPN mode (bucket and EIP still built)', () => {
+    template.resourceCountIs('AWS::S3::Bucket', 1);
+    template.resourceCountIs('AWS::EC2::EIP', 1);
+    template.resourceCountIs('AWS::AutoScaling::AutoScalingGroup', 1);
   });
 });
 

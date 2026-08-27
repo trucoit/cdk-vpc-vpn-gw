@@ -5,6 +5,10 @@ for the OpenVPN client files. The gateway pulls those files at boot, brings up t
 tunnel, and only then opens private egress. Until a valid profile is in the bucket the
 gateway comes up fail-closed and drops all forwarded traffic, by design.
 
+This doc applies when the gateway runs in VPN mode, which is the default. With
+`EnableVpn=false` the gateway is a plain NAT instance with no tunnel, so none of the
+steps here apply and no profile is needed.
+
 This doc covers what to upload, the exact format the boot script expects, and how to
 apply a change. For checking the tunnel afterward, see the [operations runbook](operations.md).
 

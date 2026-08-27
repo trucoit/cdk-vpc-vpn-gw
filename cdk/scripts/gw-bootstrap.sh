@@ -73,20 +73,21 @@ for i in $(seq 1 15); do
 done
 
 #################################
-# Kill switch (fail-closed firewall)
+# Forwarding firewall
 ##
-# The real leak guarantee. A systemd oneshot programs it, not just this user-data,
-# because cloud-init runs once per instance and a reboot would otherwise drop the
-# rules. The unit is ordered before OpenVPN, so DROP is in force before any packet
-# can be forwarded, and it reprograms itself on every boot.
+# A systemd oneshot programs the FORWARD rules, not just this user-data, because
+# cloud-init runs once per instance and a reboot would otherwise drop them. It
+# reprograms itself on every boot, and in VPN mode it is ordered before OpenVPN so
+# DROP is in force before any packet can be forwarded.
 #
-# The rules are scoped by interface, which is stricter and clearer than matching IP
-# ranges. Forwarded traffic only ever crosses between the LAN NIC and tun0, so the
-# two allowed paths are LAN->tun0 outbound and tun0->LAN for established replies.
-# Anything else hits DROP, and there is no LAN-side SNAT, so an unmatched packet
-# leaves un-NATed and the internet gateway discards it. The LAN NIC name varies by
-# instance type (eth0 / ens5 / enX0), so detect it once and persist it for the kill
-# switch and tunnel scripts to read.
+# The rules are scoped by interface and branch on VpnEnabled. In VPN mode this is a
+# fail-closed kill switch: the only forwarding paths are LAN->tun0 and tun0->LAN for
+# established replies, so when the tunnel is down every forwarded packet hits DROP
+# and there is no LAN-side SNAT to leak past it. In NAT-instance mode (VpnEnabled
+# false) it forwards LAN traffic out the primary NIC to the internet gateway and NATs
+# it, which is a plain NAT instance and NOT fail-closed. The LAN NIC name varies by
+# instance type (eth0 / ens5 / enX0), so detect it once and persist it for the
+# firewall and tunnel scripts to read.
 LAN_IF=$(ip route show default | awk '{print $5; exit}')
 echo "$LAN_IF" > /etc/gw-lan-if
 
@@ -99,22 +100,34 @@ iptables -t nat -F POSTROUTING
 iptables -t mangle -F FORWARD
 
 iptables -P FORWARD DROP
-# outbound, only traffic forwarded from the LAN NIC into the tunnel
-iptables -A FORWARD -i "$LAN_IF" -o tun0 -j ACCEPT
-# return, only established replies coming back from the tunnel to the LAN NIC
-iptables -A FORWARD -i tun0 -o "$LAN_IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-# NAT everything leaving the tunnel to the tunnel's address
-iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE
-# clamp MSS to the tunnel's lower path MTU so large TCP segments don't blackhole
-iptables -t mangle -A FORWARD -p tcp --syn -o tun0 -j TCPMSS --clamp-mss-to-pmtu
-# IPv6 has no forwarding path here. Fail closed if a v6 CIDR ever appears.
+if [ "${VpnEnabled}" = "true" ]; then
+  # VPN router (fail-closed): forward only between the LAN NIC and the tunnel, and
+  # NAT out tun0. When the tunnel is down, forwarded packets hit the DROP policy and
+  # nothing falls back to the public path.
+  # outbound, only traffic forwarded from the LAN NIC into the tunnel
+  iptables -A FORWARD -i "$LAN_IF" -o tun0 -j ACCEPT
+  # return, only established replies coming back from the tunnel to the LAN NIC
+  iptables -A FORWARD -i tun0 -o "$LAN_IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # NAT everything leaving the tunnel to the tunnel's address
+  iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE
+  # clamp MSS to the tunnel's lower path MTU so large TCP segments don't blackhole
+  iptables -t mangle -A FORWARD -p tcp --syn -o tun0 -j TCPMSS --clamp-mss-to-pmtu
+else
+  # Plain NAT instance (NOT fail-closed): forward LAN traffic out the primary NIC to
+  # the internet gateway and NAT it. Egress rides the public path, no tunnel.
+  iptables -A FORWARD -i "$LAN_IF" -j ACCEPT
+  iptables -A FORWARD -o "$LAN_IF" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -t nat -A POSTROUTING -o "$LAN_IF" -j MASQUERADE
+  iptables -t mangle -A FORWARD -p tcp --syn -o "$LAN_IF" -j TCPMSS --clamp-mss-to-pmtu
+fi
+# IPv6 has no forwarding path in either mode. Fail closed if a v6 CIDR appears.
 ip6tables -P FORWARD DROP 2>/dev/null || true
 KILLSWITCH
 chmod 0755 /usr/local/sbin/gw-killswitch.sh
 
 cat > /etc/systemd/system/gw-killswitch.service <<'UNIT'
 [Unit]
-Description=Custom gateway fail-closed firewall (kill switch)
+Description=Custom gateway forwarding firewall (kill switch in VPN mode)
 After=network-pre.target
 Before=openvpn-client@tun-vpn.service
 Wants=network-pre.target
@@ -128,6 +141,15 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now gw-killswitch.service
+
+#################################
+# VPN tunnel (VPN mode only)
+##
+# In NAT-instance mode (VpnEnabled=false) there is no tunnel, so skip the profile
+# pull, the OpenVPN config, and the tunnel bring-up. /run/gw-vpn-configured is then
+# never created, so the watchdog checks only the route and the firewall above
+# forwards straight out the primary NIC.
+if [ "${VpnEnabled}" = "true" ]; then
 
 #################################
 # VPN client files
@@ -246,6 +268,7 @@ if [ -f /run/gw-vpn-configured ]; then
   test -n "$TUNIP"
   test "$TUNIP" != "$EIP"
 fi
+fi # VpnEnabled = true
 
 #################################
 # Claim the private default route

@@ -60,6 +60,8 @@ At boot the instance turns itself into a fail-closed VPN router, in this order:
 4. Bring up an OpenVPN tunnel from the profile in `/etc/vpn` and confirm traffic leaves through it.
 5. Only then point the private route table's `0.0.0.0/0` at its own instance id.
 
+`EnableVpn=false` turns off steps 3 (kill switch) and 4 (tunnel). The firewall instead forwards the private tier out the primary NIC and NATs it to the internet gateway, so the same box becomes a plain self-healing NAT instance. That is a cheaper alternative to the managed NAT gateway, but it is NOT fail-closed: egress rides the open internet with no tunnel. The route claim, EIP, and watchdog still apply, and the watchdog checks only the route since there is no tunnel.
+
 With no profile uploaded, the box still boots, but the kill switch drops all private egress until you add one. The first deploy against an empty bucket succeeds without ever leaking.
 
 ### One roaming instance, not a fixed ENI

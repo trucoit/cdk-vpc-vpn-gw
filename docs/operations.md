@@ -102,6 +102,12 @@ A healthy `FORWARD` chain has policy DROP with exactly two ACCEPT rules, `-i <la
 tun0` and `-i tun0 -o <lan>` for established replies. Re-run the programming by hand
 with `systemctl restart gw-killswitch.service`.
 
+In NAT-instance mode (`EnableVpn=false`) the same service programs a different, non
+fail-closed rule set: it forwards from the LAN NIC and MASQUERADEs out the LAN NIC
+(`-o <lan>`) instead of `tun0`, and there is no tunnel. Check with `iptables -S FORWARD`
+and `iptables -t nat -S POSTROUTING`. The VPN tunnel and policy-routing sections below
+do not apply in that mode.
+
 ## VPN tunnel
 
 OpenVPN runs as `openvpn-client@tun-vpn`. Its config is assembled at boot from the

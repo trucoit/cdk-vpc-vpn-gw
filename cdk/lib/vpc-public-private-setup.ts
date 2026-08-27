@@ -96,6 +96,18 @@ export interface VpcPublicPrivateSetupProps {
    * the gateway's tunnel being up.
    */
   readonly enableSsmEndpoints?: boolean;
+  /**
+   * Run the custom gateway as a real OpenVPN router (true, the default) or as a
+   * plain NAT instance (false). Custom gateway only.
+   *
+   * When true the gateway is fail-closed: it forwards the private tier only
+   * through the tunnel and drops all egress until a VPN profile is uploaded.
+   * When false it is a self-healing Spot NAT instance that NATs the private tier
+   * straight out to the internet through the internet gateway. That is cheaper
+   * than a managed NAT gateway, but it is NOT fail-closed: egress rides the open
+   * internet, no tunnel and no kill switch.
+   */
+  readonly enableVpn?: boolean;
 }
 
 /** Resolved configuration shared by the build methods. */
@@ -106,6 +118,7 @@ interface Cfg {
   useNat: Gate;
   useCustom: Gate;
   ssmEndpointsOn: Gate;
+  vpnEnabled: string;
   flowLogsOn: Gate;
   trafficType: string;
   retentionInDays: number;
@@ -152,7 +165,8 @@ export class VpcPublicPrivateSetup extends Construct {
       props.retentionInDays === undefined &&
       props.gatewayInstanceType === undefined &&
       props.gatewayCapacityMode === undefined &&
-      props.enableSsmEndpoints === undefined;
+      props.enableSsmEndpoints === undefined &&
+      props.enableVpn === undefined;
 
     return parametric ? this.parametricConfig() : this.literalConfig(props);
   }
@@ -242,6 +256,19 @@ export class VpcPublicPrivateSetup extends Construct {
       allowedValues: ['true', 'false'],
     });
 
+    const enableVpn = new CfnParameter(this, 'EnableVpn', {
+      description: [
+        'Run the custom gateway as an OpenVPN router (true) or a plain NAT instance',
+        '(false). Used only when NetworkMode=PublicPrivateCustomRouting.',
+        'true is fail-closed: the private tier egresses only through the tunnel and',
+        'stays dropped until a VPN profile is uploaded. false is a cheap self-healing',
+        'NAT instance that egresses straight to the internet, and is NOT fail-closed.',
+      ].join('\n'),
+      type: 'String',
+      default: 'true',
+      allowedValues: ['true', 'false'],
+    });
+
     // Interface groups our parameters. Stack-level, so set it on the stack.
     Stack.of(this).templateOptions.metadata = {
       'AWS::CloudFormation::Interface': {
@@ -253,7 +280,7 @@ export class VpcPublicPrivateSetup extends Construct {
           },
           {
             Label: { default: 'Custom routing gateway (NetworkMode=PublicPrivateCustomRouting) ...' },
-            Parameters: ['GatewayInstanceType', 'GatewayCapacityMode', 'EnableSsmEndpoints'],
+            Parameters: ['GatewayInstanceType', 'GatewayCapacityMode', 'EnableVpn', 'EnableSsmEndpoints'],
           },
         ],
       },
@@ -279,6 +306,7 @@ export class VpcPublicPrivateSetup extends Construct {
           Fn.conditionEquals(enableSsmEndpoints.valueAsString, 'true'),
         ),
       }),
+      vpnEnabled: enableVpn.valueAsString,
       flowLogsOn: new CfnCondition(this, 'EnableFlowLogsCondition', {
         expression: Fn.conditionEquals(enableFlowLogs.valueAsString, 'true'),
       }),
@@ -305,6 +333,7 @@ export class VpcPublicPrivateSetup extends Construct {
       useNat: mode === 'PublicPrivate',
       useCustom: mode === 'PublicPrivateCustomRouting',
       ssmEndpointsOn: mode === 'PublicPrivateCustomRouting' && (props.enableSsmEndpoints ?? false),
+      vpnEnabled: String(props.enableVpn ?? true),
       flowLogsOn: props.enableFlowLogs ?? false,
       trafficType: props.trafficType ?? 'REJECT',
       retentionInDays: props.retentionInDays ?? 14,
@@ -610,6 +639,7 @@ export class VpcPublicPrivateSetup extends Construct {
                 PrivateRouteTable: this.privateRouteTable!.ref,
                 CustomGwVpnBucket: this.vpnBucket!.ref,
                 CustomGwEipAllocId: this.customGwEip!.attrAllocationId,
+                VpnEnabled: cfg.vpnEnabled,
               }),
             ),
             tagSpecifications: [
