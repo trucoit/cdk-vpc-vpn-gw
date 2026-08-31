@@ -11,7 +11,9 @@ trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackId} --resource ${AsgLogic
 # (always the sole body of a heredoc here) is replaced with that file's verbatim
 # contents at synth time by assembleBootstrap() in cdk/lib/vpc-public-private-setup.ts,
 # before the whole script is wrapped in Fn::Sub. The result is one user-data blob,
-# so `${...}` still resolves as CloudFormation substitutions everywhere below.
+# so the dollar-brace placeholders still resolve as CloudFormation substitutions
+# everywhere below. (Any literal dollar-brace text in a comment must be avoided
+# here, since Fn::Sub would try to read it as a resource reference.)
 
 #################################
 # Metadata and interface
